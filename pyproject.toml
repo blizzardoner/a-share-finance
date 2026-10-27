@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ashare-finance"
+version = "0.1.0"
+description = "Static A-share financial and dividend data pipeline"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+ashare-finance = "ashare_finance.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ashare_finance"]

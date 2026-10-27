@@ -1,0 +1,57 @@
+name: Update Eastmoney data and deploy Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install crawler
+        run: python -m pip install -e .
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run browser logic tests
+        run: npm test
+
+      - name: Fetch current A-share finance and dividend data
+        run: ashare-finance --output public/data --since 2021-01-01 --min-interval 0.18
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,9 @@
+{
+  "name": "a-share-finance",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests-js/*.test.js",
+    "check": "node --check public/app.js && node --test tests-js/*.test.js"
+  }
+}

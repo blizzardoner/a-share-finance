@@ -1,0 +1,15 @@
+{
+  "name": "A股透镜 · 财报与分红",
+  "short_name": "A股透镜",
+  "description": "浏览全部A股上市公司的财务、现金流与分红数据",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#080d19",
+  "theme_color": "#0b1020",
+  "icons": [
+    {"src":"./icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"./icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}
