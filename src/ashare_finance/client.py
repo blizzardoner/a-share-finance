@@ -13,6 +13,7 @@ Progress = Callable[[str], None]
 
 class EastmoneyClient:
     STOCK_URL = "https://82.push2.eastmoney.com/api/qt/clist/get"
+    STOCK_URLS = tuple(f"https://{host}.push2.eastmoney.com/api/qt/clist/get" for host in (82, 28, 33, 80))
     SECURITIES_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
     ORG_COLUMNS = (
@@ -76,7 +77,7 @@ class EastmoneyClient:
     def fetch_stocks(self) -> list[dict[str, Any]]:
         params = {
             "pn": 1,
-            "pz": 1000,
+            "pz": 100,
             "po": 1,
             "np": 1,
             "fltt": 2,
@@ -85,16 +86,19 @@ class EastmoneyClient:
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
             "fields": "f2,f3,f12,f13,f14,f20,f21,f100",
         }
-        first = self._request(self.STOCK_URL, params)
+        first = self._request(self.STOCK_URLS[0], params)
         data = first.get("data") or {}
         rows = list(data.get("diff") or [])
         total = int(data.get("total") or len(rows))
-        pages = max(1, (total + params["pz"] - 1) // params["pz"])
+        effective_page_size = max(1, len(rows))
+        pages = max(1, (total + effective_page_size - 1) // effective_page_size)
         self.progress(f"A股目录: 1/{pages} · {len(rows)}/{total}")
         for page in range(2, pages + 1):
             current = dict(params)
             current["pn"] = page
-            payload = self._request(self.STOCK_URL, current)
+            if self.min_interval > 0:
+                time.sleep(max(0.0, 0.8 - self.min_interval))
+            payload = self._request(self.STOCK_URLS[(page - 1) % len(self.STOCK_URLS)], current)
             rows.extend((payload.get("data") or {}).get("diff") or [])
             self.progress(f"A股目录: {page}/{pages} · {len(rows)}/{total}")
         return rows
