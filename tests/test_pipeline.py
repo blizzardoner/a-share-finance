@@ -1,15 +1,18 @@
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from ashare_finance.pipeline import (
     build_company_documents,
+    dedupe_financials,
     filter_recent_companies,
     normalize_dividend,
     normalize_financial,
     normalize_stock,
     write_dataset,
+    year_windows,
 )
 
 
@@ -70,6 +73,20 @@ class NormalizationTests(unittest.TestCase):
 
 
 class DatasetTests(unittest.TestCase):
+    def test_year_windows_split_global_fetch_into_bounded_partitions(self):
+        self.assertEqual(year_windows("2024-06-01", date(2026, 10, 27)), [
+            ("2024-06-01", "2024-12-31"),
+            ("2025-01-01", "2025-12-31"),
+            ("2026-01-01", "2026-10-27"),
+        ])
+
+    def test_dedupe_financials_keeps_latest_notice_for_same_period(self):
+        rows = [
+            {"code": "600519", "period": "2025-12-31", "notice_date": "2026-03-01", "revenue": 1},
+            {"code": "600519", "period": "2025-12-31", "notice_date": "2026-03-31", "revenue": 2},
+        ]
+        self.assertEqual(dedupe_financials(rows)[0]["revenue"], 2)
+
     def test_filter_recent_companies_excludes_historical_delisted_rows(self):
         stocks = [
             {"code": "000001", "name": "平安银行"},

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -112,6 +113,28 @@ def normalize_dividend(row: dict[str, Any]) -> dict[str, Any]:
         "bps": _num(row.get("BVPS")),
         "total_shares": _num(row.get("TOTAL_SHARES")),
     }
+
+
+def year_windows(since: str, today: date) -> list[tuple[str, str]]:
+    start = date.fromisoformat(since)
+    windows: list[tuple[str, str]] = []
+    for year in range(start.year, today.year + 1):
+        left = start if year == start.year else date(year, 1, 1)
+        right = today if year == today.year else date(year, 12, 31)
+        windows.append((left.isoformat(), right.isoformat()))
+    return windows
+
+
+def dedupe_financials(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row.get("code") or "", row.get("period") or "")
+        if not all(key):
+            continue
+        current = latest.get(key)
+        if current is None or (row.get("notice_date") or "") >= (current.get("notice_date") or ""):
+            latest[key] = row
+    return list(latest.values())
 
 
 def filter_recent_companies(

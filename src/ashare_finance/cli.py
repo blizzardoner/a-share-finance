@@ -9,11 +9,13 @@ from typing import Any
 from .client import EastmoneyClient
 from .pipeline import (
     build_company_documents,
+    dedupe_financials,
     filter_recent_companies,
     normalize_dividend,
     normalize_financial,
     normalize_stock,
     write_dataset,
+    year_windows,
 )
 
 
@@ -43,8 +45,8 @@ def _finance_params(filter_text: str) -> dict[str, Any]:
         "quoteColumns": "",
         "filter": filter_text,
         "pageSize": 500,
-        "sortTypes": -1,
-        "sortColumns": "REPORT_DATE",
+        "sortTypes": "-1,1",
+        "sortColumns": "REPORT_DATE,SECURITY_CODE",
         "source": "HSF10",
         "client": "PC",
     }
@@ -56,8 +58,8 @@ def _dividend_params(filter_text: str) -> dict[str, Any]:
         "columns": ",".join(DIVIDEND_COLUMNS),
         "filter": filter_text,
         "pageSize": 500,
-        "sortTypes": -1,
-        "sortColumns": "REPORT_DATE",
+        "sortTypes": "-1,1",
+        "sortColumns": "REPORT_DATE,SECURITY_CODE",
         "source": "WEB",
         "client": "WEB",
     }
@@ -97,18 +99,25 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
             for row in directory_rows
             if "A股" in str(row.get("SECURITY_TYPE") or "")
             and row.get("SECUCODE", "").endswith((".SH", ".SZ", ".BJ"))
+            and str(row.get("SECURITY_CODE") or "").isdigit()
+            and row.get("LISTING_DATE")
+            and not str(row.get("SECURITY_NAME_ABBR") or "").endswith("退")
         ]
-        financial_raw = client.fetch_pages(
-            client.SECURITIES_URL,
-            _finance_params(f"(REPORT_DATE>='{since}')"),
-            "全市场财务",
-        )
-        dividend_raw = client.fetch_pages(
-            client.DATACENTER_URL,
-            _dividend_params(f"(REPORT_DATE>='{since}')"),
-            "全市场分红",
-        )
-    financials = [normalize_financial(row) for row in financial_raw]
+        financial_raw = []
+        dividend_raw = []
+        for start_date, end_date in year_windows(since, date.today()):
+            date_filter = f"(REPORT_DATE>='{start_date}')(REPORT_DATE<='{end_date}')"
+            financial_raw.extend(client.fetch_pages(
+                client.SECURITIES_URL,
+                _finance_params(date_filter),
+                f"全市场财务 {start_date[:4]}",
+            ))
+            dividend_raw.extend(client.fetch_pages(
+                client.DATACENTER_URL,
+                _dividend_params(date_filter),
+                f"全市场分红 {start_date[:4]}",
+            ))
+    financials = dedupe_financials(normalize_financial(row) for row in financial_raw)
     dividends = [normalize_dividend(row) for row in dividend_raw]
     if not codes:
         cutoff = f"{date.today().year - 1}-09-30"
