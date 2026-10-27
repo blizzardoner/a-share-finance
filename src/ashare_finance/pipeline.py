@@ -114,6 +114,19 @@ def normalize_dividend(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def filter_recent_companies(
+    stocks: Iterable[dict[str, Any]],
+    financials: Iterable[dict[str, Any]],
+    cutoff: str,
+) -> list[dict[str, Any]]:
+    recent_codes = {
+        row["code"]
+        for row in financials
+        if row.get("code") and (row.get("period") or "") >= cutoff
+    }
+    return [stock for stock in stocks if stock.get("code") in recent_codes]
+
+
 def build_company_documents(
     stocks: Iterable[dict[str, Any]],
     financials: Iterable[dict[str, Any]],

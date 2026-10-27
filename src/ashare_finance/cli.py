@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .client import EastmoneyClient
-from .pipeline import build_company_documents, normalize_dividend, normalize_financial, normalize_stock, write_dataset
+from .pipeline import (
+    build_company_documents,
+    filter_recent_companies,
+    normalize_dividend,
+    normalize_financial,
+    normalize_stock,
+    write_dataset,
+)
 
 
 FINANCIAL_COLUMNS = [
@@ -84,9 +91,13 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
             raise ValueError(f"非当前A股代码: {', '.join(missing)}")
         financial_raw, dividend_raw = fetch_selected(client, stocks, since)
     else:
-        # The quote directory is the authoritative current-listing set.  The
-        # organization archive also contains thousands of delisted companies.
-        stocks = [normalize_stock(row) for row in client.fetch_stocks()]
+        directory_rows = client.fetch_org_directory()
+        stocks = [
+            normalize_stock(row)
+            for row in directory_rows
+            if "A股" in str(row.get("SECURITY_TYPE") or "")
+            and row.get("SECUCODE", "").endswith((".SH", ".SZ", ".BJ"))
+        ]
         financial_raw = client.fetch_pages(
             client.SECURITIES_URL,
             _finance_params(f"(REPORT_DATE>='{since}')"),
@@ -97,10 +108,16 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
             _dividend_params(f"(REPORT_DATE>='{since}')"),
             "全市场分红",
         )
+    financials = [normalize_financial(row) for row in financial_raw]
+    dividends = [normalize_dividend(row) for row in dividend_raw]
+    if not codes:
+        cutoff = f"{date.today().year - 1}-09-30"
+        stocks = filter_recent_companies(stocks, financials, cutoff)
+        print(f"近期财报筛选: {len(stocks)} 家（截止线 {cutoff}）")
     documents = build_company_documents(
         stocks,
-        (normalize_financial(row) for row in financial_raw),
-        (normalize_dividend(row) for row in dividend_raw),
+        financials,
+        dividends,
     )
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return write_dataset(output, documents, generated_at)

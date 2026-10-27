@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ashare_finance.pipeline import (
     build_company_documents,
+    filter_recent_companies,
     normalize_dividend,
     normalize_financial,
     normalize_stock,
@@ -69,6 +70,18 @@ class NormalizationTests(unittest.TestCase):
 
 
 class DatasetTests(unittest.TestCase):
+    def test_filter_recent_companies_excludes_historical_delisted_rows(self):
+        stocks = [
+            {"code": "000001", "name": "平安银行"},
+            {"code": "000003", "name": "PT金田A"},
+        ]
+        financials = [
+            {"code": "000001", "period": "2026-06-30"},
+            {"code": "000003", "period": "2002-12-31"},
+        ]
+        current = filter_recent_companies(stocks, financials, "2025-09-30")
+        self.assertEqual(current, [{"code": "000001", "name": "平安银行"}])
+
     def test_build_documents_filters_non_current_stocks_and_sorts_periods(self):
         stocks = [normalize_stock({"f12": "600519", "f14": "贵州茅台", "f13": 1})]
         financials = [
