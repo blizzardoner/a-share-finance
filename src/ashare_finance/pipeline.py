@@ -125,6 +125,14 @@ def year_windows(since: str, today: date) -> list[tuple[str, str]]:
     return windows
 
 
+def ranking_end_year(as_of: date) -> int:
+    return as_of.year - (1 if as_of.month >= 5 else 2)
+
+
+def dividend_ranking_end_year(as_of: date) -> int:
+    return as_of.year - (1 if as_of.month >= 9 else 2)
+
+
 def dedupe_financials(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
@@ -148,6 +156,165 @@ def filter_recent_companies(
         if row.get("code") and (row.get("period") or "") >= cutoff
     }
     return [stock for stock in stocks if stock.get("code") in recent_codes]
+
+
+def merge_stock_quotes(
+    stocks: Iterable[dict[str, Any]],
+    quotes: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    quote_map = {quote.get("code"): quote for quote in quotes if quote.get("code")}
+    market_fields = ("price", "change_pct", "market_cap", "float_market_cap")
+    return [
+        {
+            **stock,
+            **{
+                field: quote_map.get(stock.get("code"), {}).get(field)
+                for field in market_fields
+            },
+        }
+        for stock in stocks
+    ]
+
+
+def require_market_caps(stocks: Iterable[dict[str, Any]]) -> None:
+    missing = [
+        str(stock.get("code"))
+        for stock in stocks
+        if not _num(stock.get("market_cap")) or float(stock["market_cap"]) <= 0
+    ]
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = f" 等{len(missing)}家" if len(missing) > 10 else ""
+        raise RuntimeError(f"当前A股市值缺失 {preview}{suffix}")
+
+
+def _listed_for_full_window(stock: dict[str, Any], start_year: int) -> bool:
+    listing_date = stock.get("listing_date")
+    return bool(listing_date and listing_date <= f"{start_year}-01-01")
+
+
+def build_dividend_rankings(
+    stocks: Iterable[dict[str, Any]],
+    dividends: Iterable[dict[str, Any]],
+    end_year: int,
+    periods: tuple[int, ...] = (1, 3, 5, 10),
+) -> dict[int, list[dict[str, Any]]]:
+    annual_cash: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    actions: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in dividends:
+        period = row.get("period") or ""
+        if "实施" not in str(row.get("progress") or "") or not period[:4].isdigit():
+            continue
+        cash_per_10 = _num(row.get("cash_per_10"))
+        total_shares = _num(row.get("total_shares"))
+        if not cash_per_10 or not total_shares:
+            continue
+        action_date = row.get("ex_date") or row.get("record_date") or "undated"
+        key = (row.get("code"), period, action_date)
+        current = actions.get(key)
+        if current is None or (row.get("plan_date") or "") >= (current.get("plan_date") or ""):
+            actions[key] = row
+    for row in actions.values():
+        period = str(row["period"])
+        cash_per_10 = float(row["cash_per_10"])
+        total_shares = float(row["total_shares"])
+        annual_cash[str(row.get("code"))][int(period[:4])] += cash_per_10 / 10 * total_shares
+
+    rankings: dict[int, list[dict[str, Any]]] = {}
+    stock_list = list(stocks)
+    for years in periods:
+        start_year = end_year - years + 1
+        rows: list[dict[str, Any]] = []
+        for stock in stock_list:
+            market_cap = _num(stock.get("market_cap"))
+            if not market_cap or market_cap <= 0 or not _listed_for_full_window(stock, start_year):
+                continue
+            yearly = annual_cash.get(stock["code"], {})
+            payouts = [yearly.get(year, 0.0) for year in range(start_year, end_year + 1)]
+            rows.append({
+                "code": stock["code"],
+                "yield": sum(payouts) / years / market_cap * 100,
+                "dividend_years": sum(value > 0 for value in payouts),
+            })
+        rankings[years] = sorted(rows, key=lambda row: (-row["yield"], row["code"]))
+    return rankings
+
+
+def _percentiles(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
+    ordered = sorted((float(row[key]), row["code"]) for row in rows)
+    if len(ordered) == 1:
+        return {rows[0]["code"]: 100.0}
+    result: dict[str, float] = {}
+    index = 0
+    while index < len(ordered):
+        end = index + 1
+        while end < len(ordered) and ordered[end][0] == ordered[index][0]:
+            end += 1
+        percentile = (index + (end - index - 1) / 2) / (len(ordered) - 1) * 100
+        for _, code in ordered[index:end]:
+            result[code] = percentile
+        index = end
+    return result
+
+
+def build_performance_rankings(
+    stocks: Iterable[dict[str, Any]],
+    annual_financials: Iterable[dict[str, Any]],
+    end_year: int,
+    periods: tuple[int, ...] = (1, 3, 5, 10),
+) -> dict[int, list[dict[str, Any]]]:
+    by_company: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    for row in annual_financials:
+        period = row.get("period") or ""
+        if period[:4].isdigit() and (
+            row.get("report_type") == "年报" or period.endswith("-12-31")
+        ):
+            by_company[str(row.get("code"))][int(period[:4])] = row
+
+    rankings: dict[int, list[dict[str, Any]]] = {}
+    for years in periods:
+        baseline_year = end_year - years
+        candidates: list[dict[str, Any]] = []
+        for stock in stocks:
+            if not _listed_for_full_window(stock, baseline_year):
+                continue
+            company = by_company.get(stock["code"], {})
+            required = [company.get(year) for year in range(baseline_year, end_year + 1)]
+            if any(row is None for row in required):
+                continue
+            baseline, latest = required[0], required[-1]
+            revenue_start, revenue_end = _num(baseline.get("revenue")), _num(latest.get("revenue"))
+            profit_start, profit_end = _num(baseline.get("net_profit")), _num(latest.get("net_profit"))
+            target = required[1:]
+            roes = [_num(row.get("roe")) for row in target]
+            profits = [_num(row.get("net_profit")) for row in target]
+            if not revenue_start or not revenue_end or not profit_start or not profit_end:
+                continue
+            if (
+                min(revenue_start, revenue_end, profit_start, profit_end) <= 0
+                or any(value is None for value in roes)
+                or any(value is None for value in profits)
+            ):
+                continue
+            candidates.append({
+                "code": stock["code"],
+                "revenue_cagr": ((revenue_end / revenue_start) ** (1 / years) - 1) * 100,
+                "profit_cagr": ((profit_end / profit_start) ** (1 / years) - 1) * 100,
+                "avg_roe": sum(roes) / years,
+                "profitable_years": sum(value > 0 for value in profits),
+            })
+
+        metric_weights = {
+            "revenue_cagr": 0.3,
+            "profit_cagr": 0.3,
+            "avg_roe": 0.3,
+            "profitable_years": 0.1,
+        }
+        percentiles = {key: _percentiles(candidates, key) for key in metric_weights} if candidates else {}
+        for row in candidates:
+            row["score"] = sum(percentiles[key][row["code"]] * weight for key, weight in metric_weights.items())
+        rankings[years] = sorted(candidates, key=lambda row: (-row["score"], row["code"]))
+    return rankings
 
 
 def build_company_documents(
@@ -179,11 +346,20 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
-def write_dataset(output: Path, documents: dict[str, dict[str, Any]], generated_at: str) -> dict[str, Any]:
+def write_dataset(
+    output: Path,
+    documents: dict[str, dict[str, Any]],
+    generated_at: str,
+    rankings: dict[str, dict[int, list[dict[str, Any]]]] | None = None,
+    ranking_end_year: int | dict[str, int] | None = None,
+) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     companies_dir = output / "companies"
+    rankings_dir = output / "rankings"
     if companies_dir.exists():
         shutil.rmtree(companies_dir)
+    if rankings_dir.exists():
+        shutil.rmtree(rankings_dir)
     stocks = [documents[code]["stock"] for code in sorted(documents)]
     metadata = {
         "generated_at": generated_at,
@@ -196,4 +372,17 @@ def write_dataset(output: Path, documents: dict[str, dict[str, Any]], generated_
     _write_json(output / "meta.json", metadata)
     for code, document in documents.items():
         _write_json(companies_dir / code[:2] / f"{code}.json", {"meta": metadata, **document})
+    for kind, by_period in (rankings or {}).items():
+        end_year = ranking_end_year.get(kind) if isinstance(ranking_end_year, dict) else ranking_end_year
+        for years, rows in by_period.items():
+            _write_json(rankings_dir / f"{kind}-{years}.json", {
+                "meta": {
+                    "generated_at": generated_at,
+                    "kind": kind,
+                    "years": years,
+                    "end_year": end_year,
+                    "row_count": len(rows),
+                },
+                "rows": rows,
+            })
     return metadata

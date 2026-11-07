@@ -37,6 +37,50 @@ export function shardUrl(basePath, code) {
   return `${base}data/companies/${code.slice(0, 2)}/${code}.json`
 }
 
+export function rankingUrl(basePath, kind, years) {
+  const base = basePath.endsWith('/') ? basePath : `${basePath}/`
+  return `${base}data/rankings/${kind}-${years}.json`
+}
+
+export function joinRankingRows(rows, stocks) {
+  const byCode = new Map(stocks.map(stock => [stock.code, stock]))
+  return rows.flatMap(row => {
+    const stock = byCode.get(row.code)
+    return stock ? [{ ...row, ...stock }] : []
+  })
+}
+
+export function filterRankingRows(rows, query) {
+  const needle = String(query || '').trim().toLowerCase()
+  if (!needle) return rows
+  return rows.filter(row => `${row.code} ${row.name} ${row.industry || ''} ${row.pinyin || ''}`.toLowerCase().includes(needle))
+}
+
+export function rankRankingRows(rows, kind) {
+  const metric = kind === 'dividend' ? 'yield' : 'score'
+  let prior = null
+  let rank = 0
+  return rows.map((row, index) => {
+    const value = Number(row[metric])
+    if (index === 0 || value !== prior) rank = index + 1
+    prior = value
+    return { ...row, rank }
+  })
+}
+
+export function rankingMetricText(kind, row, years) {
+  if (kind === 'dividend') {
+    const price = row.price == null ? '—' : `¥${Number(row.price).toFixed(2)}`
+    return `${years}年中${row.dividend_years}年现金分红 · 当前价 ${price}`
+  }
+  const percent = (value, signed = false) => {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
+    const number = Number(value)
+    return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
+  }
+  return `${years}年营收CAGR ${percent(row.revenue_cagr, true)} · 归母净利CAGR ${percent(row.profit_cagr, true)} · 平均ROE ${percent(row.avg_roe)} · 盈利${row.profitable_years}/${years}年`
+}
+
 export function searchStocks(stocks, query, limit = 30) {
   const needle = String(query || '').trim().toLowerCase()
   if (!needle) return stocks.slice(0, limit)

@@ -25,10 +25,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
@@ -39,19 +39,29 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run browser logic tests
-        run: npm test
+        run: npm run check
 
       - name: Fetch current A-share finance and dividend data
-        run: ashare-finance --output public/data --since 2021-01-01 --min-interval 0.18
+        run: ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
           path: public
 
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4
+
+      - name: Verify the deployed data matches this build
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: >-
+          python -m ashare_finance.verify_pages
+          --expected public/data/meta.json
+          --url "${PAGE_URL%/}/data/meta.json"
+          --attempts 20
+          --delay 15

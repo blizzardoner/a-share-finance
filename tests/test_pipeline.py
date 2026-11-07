@@ -6,11 +6,17 @@ from pathlib import Path
 
 from ashare_finance.pipeline import (
     build_company_documents,
+    build_dividend_rankings,
+    build_performance_rankings,
+    dividend_ranking_end_year,
     dedupe_financials,
     filter_recent_companies,
+    merge_stock_quotes,
     normalize_dividend,
     normalize_financial,
     normalize_stock,
+    ranking_end_year,
+    require_market_caps,
     write_dataset,
     year_windows,
 )
@@ -73,6 +79,123 @@ class NormalizationTests(unittest.TestCase):
 
 
 class DatasetTests(unittest.TestCase):
+    def test_ranking_end_year_waits_for_annual_report_deadline(self):
+        self.assertEqual(ranking_end_year(date(2026, 4, 30)), 2024)
+        self.assertEqual(ranking_end_year(date(2026, 5, 1)), 2025)
+
+    def test_dividend_ranking_waits_for_implementation_season_to_finish(self):
+        self.assertEqual(dividend_ranking_end_year(date(2026, 8, 31)), 2024)
+        self.assertEqual(dividend_ranking_end_year(date(2026, 9, 1)), 2025)
+
+    def test_merge_stock_quotes_preserves_directory_identity_and_adds_market_values(self):
+        stocks = [{
+            "code": "600519", "name": "贵州茅台", "industry": "白酒",
+            "listing_date": "2001-08-27", "price": None, "market_cap": None,
+        }]
+        quotes = [{
+            "code": "600519", "name": "贵州茅台", "industry": "饮料制造",
+            "price": 1500.5, "market_cap": 1_800_000_000_000, "change_pct": 1.2,
+        }]
+
+        merged = merge_stock_quotes(stocks, quotes)
+
+        self.assertEqual(merged[0]["listing_date"], "2001-08-27")
+        self.assertEqual(merged[0]["industry"], "白酒")
+        self.assertEqual(merged[0]["price"], 1500.5)
+        self.assertEqual(merged[0]["market_cap"], 1_800_000_000_000)
+
+    def test_require_market_caps_rejects_current_stocks_missing_usable_quotes(self):
+        stocks = [
+            {"code": "000001", "market_cap": 100},
+            {"code": "600519", "market_cap": None},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "市值缺失 600519"):
+            require_market_caps(stocks)
+
+    def test_dividend_rankings_average_implemented_cash_over_full_year_window(self):
+        stocks = [
+            {
+                "code": "000001", "name": "稳定分红", "listing_date": "2000-01-01",
+                "market_cap": 1_000,
+            },
+            {
+                "code": "000002", "name": "低分红", "listing_date": "2000-01-01",
+                "market_cap": 1_000,
+            },
+            {
+                "code": "000003", "name": "新股", "listing_date": "2025-06-01",
+                "market_cap": 1_000,
+            },
+        ]
+        dividends = [
+            {"code": "000001", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 2, "total_shares": 100, "ex_date": "2026-06-01", "plan_date": "2026-04-01"},
+            # The same implemented plan must not be counted twice.
+            {"code": "000001", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 2, "total_shares": 100, "ex_date": "2026-06-01", "plan_date": "2026-04-01"},
+            # A superseded version for the same corporate action must not be added.
+            {"code": "000001", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 1.5, "total_shares": 100, "ex_date": "2026-06-01", "plan_date": "2026-03-01"},
+            {"code": "000001", "period": "2024-06-30", "progress": "实施分配", "cash_per_10": 1, "total_shares": 100, "ex_date": "2024-09-01"},
+            {"code": "000001", "period": "2023-12-31", "progress": "董事会预案", "cash_per_10": 9, "total_shares": 100},
+            {"code": "000002", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 1, "total_shares": 100, "ex_date": "2026-06-02"},
+            {"code": "000003", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 20, "total_shares": 100, "ex_date": "2026-06-03"},
+        ]
+
+        rankings = build_dividend_rankings(stocks, dividends, end_year=2025, periods=(1, 3))
+
+        self.assertEqual([row["code"] for row in rankings[1]], ["000001", "000002"])
+        self.assertAlmostEqual(rankings[1][0]["yield"], 2.0)
+        self.assertAlmostEqual(rankings[3][0]["yield"], 1.0)
+        self.assertEqual(rankings[3][0]["dividend_years"], 2)
+        self.assertNotIn("000003", {row["code"] for row in rankings[1]})
+
+    def test_dividend_rankings_dedupe_undated_revisions_by_fiscal_period(self):
+        stocks = [{"code": "000001", "listing_date": "2000-01-01", "market_cap": 1_000}]
+        dividends = [
+            {"code": "000001", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 1, "total_shares": 100, "plan_date": "2026-03-01"},
+            {"code": "000001", "period": "2025-12-31", "progress": "实施分配", "cash_per_10": 2, "total_shares": 100, "plan_date": "2026-04-01"},
+        ]
+
+        rankings = build_dividend_rankings(stocks, dividends, end_year=2025, periods=(1,))
+
+        self.assertAlmostEqual(rankings[1][0]["yield"], 2.0)
+
+    def test_performance_rankings_combine_growth_profitability_and_consistency(self):
+        stocks = [
+            {"code": "000001", "name": "高质量", "listing_date": "2000-01-01"},
+            {"code": "000002", "name": "普通公司", "listing_date": "2000-01-01"},
+            {"code": "000003", "name": "亏损公司", "listing_date": "2000-01-01"},
+        ]
+        annuals = []
+        for year, revenue, profit, roe in [(2022, 100, 10, 10), (2023, 120, 13, 12), (2024, 150, 17, 15), (2025, 180, 22, 18)]:
+            annuals.append({"code": "000001", "period": f"{year}-12-31", "revenue": revenue, "net_profit": profit, "roe": roe})
+        annuals.append({"code": "000001", "period": "2025-09-30", "revenue": 9_999, "net_profit": 9_999, "roe": 99})
+        for year, revenue, profit, roe in [(2022, 100, 10, 8), (2023, 103, 10, 8), (2024, 106, 10, 8), (2025, 109, 10, 8)]:
+            annuals.append({"code": "000002", "period": f"{year}-12-31", "revenue": revenue, "net_profit": profit, "roe": roe})
+        for year, revenue, profit, roe in [(2022, 100, -5, -2), (2023, 120, -3, -1), (2024, 140, 1, 1), (2025, 160, 2, 2)]:
+            annuals.append({"code": "000003", "period": f"{year}-12-31", "revenue": revenue, "net_profit": profit, "roe": roe})
+
+        rankings = build_performance_rankings(stocks, annuals, end_year=2025, periods=(1, 3))
+
+        self.assertEqual([row["code"] for row in rankings[3]], ["000001", "000002"])
+        leader = rankings[3][0]
+        self.assertGreater(leader["score"], rankings[3][1]["score"])
+        self.assertAlmostEqual(leader["revenue_cagr"], (1.8 ** (1 / 3) - 1) * 100)
+        self.assertAlmostEqual(leader["profit_cagr"], (2.2 ** (1 / 3) - 1) * 100)
+        self.assertEqual(leader["profitable_years"], 3)
+        self.assertNotIn("000003", {row["code"] for row in rankings[3]})
+
+    def test_performance_rankings_reject_missing_intermediate_profit(self):
+        stocks = [{"code": "000001", "listing_date": "2000-01-01"}]
+        annuals = [
+            {"code": "000001", "period": "2022-12-31", "revenue": 100, "net_profit": 10, "roe": 10},
+            {"code": "000001", "period": "2023-12-31", "revenue": 110, "net_profit": None, "roe": 11},
+            {"code": "000001", "period": "2024-12-31", "revenue": 120, "net_profit": 12, "roe": 12},
+            {"code": "000001", "period": "2025-12-31", "revenue": 130, "net_profit": 13, "roe": 13},
+        ]
+
+        rankings = build_performance_rankings(stocks, annuals, end_year=2025, periods=(3,))
+
+        self.assertEqual(rankings[3], [])
+
     def test_year_windows_split_global_fetch_into_bounded_partitions(self):
         self.assertEqual(year_windows("2024-06-01", date(2026, 10, 27)), [
             ("2024-06-01", "2024-12-31"),
@@ -113,13 +236,26 @@ class DatasetTests(unittest.TestCase):
     def test_write_dataset_uses_two_digit_shards_and_minified_json(self):
         documents = {"600519": {"stock": {"code": "600519", "name": "贵州茅台"}, "financials": [], "dividends": []}}
         with tempfile.TemporaryDirectory() as tmp:
-            result = write_dataset(Path(tmp), documents, "2026-10-22T00:00:00Z")
+            rankings = {
+                "dividend": {1: [{"code": "600519", "yield": 2.5, "dividend_years": 1}]},
+                "performance": {1: [{"code": "600519", "score": 88.0}]},
+            }
+            result = write_dataset(
+                Path(tmp), documents, "2026-10-22T00:00:00Z",
+                rankings=rankings, ranking_end_year={"dividend": 2024, "performance": 2025},
+            )
             shard = Path(tmp) / "companies" / "60" / "600519.json"
             self.assertTrue(shard.exists())
             self.assertNotIn("\n", shard.read_text(encoding="utf-8"))
             index = json.loads((Path(tmp) / "stocks.json").read_text(encoding="utf-8"))
             self.assertEqual(index["stocks"][0]["code"], "600519")
             self.assertEqual(result["company_count"], 1)
+            dividend = json.loads((Path(tmp) / "rankings" / "dividend-1.json").read_text(encoding="utf-8"))
+            performance = json.loads((Path(tmp) / "rankings" / "performance-1.json").read_text(encoding="utf-8"))
+            self.assertEqual(dividend["meta"]["end_year"], 2024)
+            self.assertEqual(performance["meta"]["end_year"], 2025)
+            self.assertEqual(dividend["rows"][0]["yield"], 2.5)
+            self.assertEqual(performance["rows"][0]["score"], 88.0)
 
 
 if __name__ == "__main__":
