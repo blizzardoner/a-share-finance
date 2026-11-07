@@ -6,6 +6,5 @@ node_modules/
 dist/
 .edge-debug/
 mobile*.png
-public/data/*.json
-public/data/companies/
+public/data/
 .DS_Store

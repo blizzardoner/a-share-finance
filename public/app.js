@@ -1,8 +1,24 @@
-import { annualRows, classFor, deriveHighlights, formatMoney, formatPercent, searchStocks, shardUrl } from './lib.js'
+import {
+  annualRows,
+  classFor,
+  deriveHighlights,
+  filterRankingRows,
+  formatMoney,
+  formatPercent,
+  joinRankingRows,
+  rankingMetricText,
+  rankRankingRows,
+  rankingUrl,
+  searchStocks,
+  shardUrl,
+} from './lib.js'
 
 const $ = id => document.getElementById(id)
 const basePath = location.pathname.endsWith('/') ? location.pathname : location.pathname.slice(0, location.pathname.lastIndexOf('/') + 1)
-const state = { stocks: [], activeCode: null, data: null }
+const state = {
+  stocks: [], activeCode: null, data: null, ready: false, companyRequest: 0,
+  ranking: { kind: 'dividend', years: 3, rows: [], meta: null, visible: 100, requestId: 0, loading: false, cache: new Map() },
+}
 
 function toast(text) { const el = $('toast'); el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2200) }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[c]) }
@@ -58,7 +74,98 @@ function dividendPanel(rows, price) {
   return `<div class="data-card"><h3>历年分红方案</h3><div class="dividend-list">${rows.map(row=>{const y=price&&row.cash_per_10?(row.cash_per_10/10/price*100):null;return `<article class="dividend-item"><time>${row.period?.slice(0,4)||'—'}年度</time><div><strong>${escapeHtml(row.plan||'未披露方案')}</strong><p>${escapeHtml(row.progress||'—')} · 除权日 ${dateText(row.ex_date)}</p></div><b>${row.cash_per_10!=null?`10派${row.cash_per_10}元`:'—'}${y!=null?` · ${y.toFixed(2)}%`:''}</b></article>`}).join('')}</div></div>`
 }
 
+function rankingDescription() {
+  if (state.ranking.kind === 'dividend') {
+    return `过去${state.ranking.years}个完整财年的平均现金分红 ÷ 当前总市值；未分红年度按0计。`
+  }
+  return '综合得分：营收CAGR 30% + 归母净利润CAGR 30% + 平均ROE 30% + 盈利年份占比 10%。'
+}
+
+function rankingPercent(value, signed = false) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
+  const number = Number(value)
+  return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
+}
+
+function rankingRow(row) {
+  const dividend = state.ranking.kind === 'dividend'
+  const value = dividend ? rankingPercent(row.yield) : Number(row.score).toFixed(1)
+  const label = dividend ? '平均分红率' : '综合得分'
+  const details = rankingMetricText(state.ranking.kind, row, state.ranking.years)
+  return `<button class="ranking-row" data-ranking-code="${row.code}" type="button"><span class="ranking-position">${row.rank}</span><span class="ranking-company"><strong>${escapeHtml(row.name)}</strong><small>${row.code} · ${escapeHtml(row.industry || row.exchange)}</small><em>${details}</em></span><span class="ranking-value"><strong>${value}</strong><small>${label}</small></span></button>`
+}
+
+function renderRanking() {
+  if (state.ranking.loading) return
+  $('ranking-description').textContent = rankingDescription()
+  const filtered = filterRankingRows(state.ranking.rows, $('ranking-search').value)
+  const visible = filtered.slice(0, state.ranking.visible)
+  const endYear = state.ranking.meta?.end_year || '—'
+  $('ranking-status').textContent = `统计截至${endYear}财年 · ${filtered.length.toLocaleString()}家公司符合完整数据要求`
+  $('ranking-list').innerHTML = visible.map(rankingRow).join('') || '<div class="data-card empty">没有符合条件的公司</div>'
+  $('ranking-more').hidden = visible.length >= filtered.length
+}
+
+function syncRankingControls() {
+  document.querySelectorAll('[data-ranking-kind]').forEach(button => button.classList.toggle('active', button.dataset.rankingKind === state.ranking.kind))
+  document.querySelectorAll('[data-ranking-years]').forEach(button => button.classList.toggle('active', Number(button.dataset.rankingYears) === state.ranking.years))
+}
+
+async function loadRanking() {
+  if (!state.ready) return
+  syncRankingControls()
+  const kind = state.ranking.kind
+  const key = `${kind}-${state.ranking.years}`
+  const requestId = ++state.ranking.requestId
+  state.ranking.visible = 100
+  state.ranking.rows = []
+  state.ranking.meta = null
+  state.ranking.loading = true
+  $('ranking-status').textContent = '正在载入排名…'
+  $('ranking-list').innerHTML = '<div class="loading-card compact"><div class="spinner"></div><strong>计算结果加载中</strong></div>'
+  $('ranking-more').hidden = true
+  try {
+    let payload = state.ranking.cache.get(key)
+    if (!payload) {
+      const response = await fetch(rankingUrl(basePath, kind, state.ranking.years))
+      if (!response.ok) throw new Error(`排名数据返回 ${response.status}`)
+      payload = await response.json()
+      if (state.ranking.requestId !== requestId) return
+      state.ranking.cache.set(key, payload)
+    }
+    if (state.ranking.requestId !== requestId) return
+    const ranked = rankRankingRows(payload.rows || [], kind)
+    state.ranking.rows = joinRankingRows(ranked, state.stocks)
+    state.ranking.meta = payload.meta || null
+    state.ranking.loading = false
+    renderRanking()
+  } catch (error) {
+    if (state.ranking.requestId !== requestId) return
+    state.ranking.loading = false
+    $('ranking-status').textContent = '排名载入失败'
+    $('ranking-list').innerHTML = `<div class="error-card"><strong>暂时无法读取排名</strong><p>${escapeHtml(error.message)}</p></div>`
+  }
+}
+
+function openRanking() {
+  if (!state.ready) {
+    toast('市场目录仍在载入，请稍候')
+    return
+  }
+  state.companyRequest += 1
+  $('loading').hidden = true
+  $('error-view').hidden = true
+  $('company-view').hidden = true
+  $('ranking-view').hidden = false
+  loadRanking()
+  window.scrollTo({ top: Math.max(0, $('ranking-view').offsetTop - 78), behavior: 'smooth' })
+}
+
 async function selectCompany(code) {
+  const requestId = ++state.companyRequest
+  state.ranking.requestId += 1
+  state.ranking.loading = false
+  $('ranking-view').hidden = true
   $('search-results').hidden = true
   $('stock-search').value = ''
   $('company-view').hidden = true
@@ -67,6 +174,7 @@ async function selectCompany(code) {
     const response = await fetch(shardUrl(basePath, code))
     if (!response.ok) throw new Error(`公司数据返回 ${response.status}`)
     const data = await response.json()
+    if (state.companyRequest !== requestId) return false
     state.activeCode = code; state.data = data
     const stock = data.stock, latest = data.financials[0] || {}, highlights = deriveHighlights(data)
     $('stock-exchange').textContent = stock.exchange
@@ -86,7 +194,12 @@ async function selectCompany(code) {
     history.replaceState({}, '', `${basePath}?code=${code}`)
     $('loading').hidden = true; $('company-view').hidden = false
     window.scrollTo({ top: Math.max(0, document.querySelector('.company-head').offsetTop - 90), behavior: 'smooth' })
-  } catch (error) { $('loading').hidden = true; $('error-view').hidden = false; $('error-message').textContent = error.message }
+    return true
+  } catch (error) {
+    if (state.companyRequest !== requestId) return false
+    $('loading').hidden = true; $('error-view').hidden = false; $('error-message').textContent = error.message
+    return false
+  }
 }
 
 async function init() {
@@ -100,7 +213,10 @@ async function init() {
     const requested = new URLSearchParams(location.search).get('code')
     const preferred = requested && state.stocks.some(x=>x.code===requested) ? requested : (state.stocks.find(x=>x.code==='600519')?.code || state.stocks[0]?.code)
     if (!preferred) throw new Error('市场目录为空')
-    await selectCompany(preferred)
+    if (!await selectCompany(preferred)) return
+    state.ready = true
+    $('stock-search').disabled = false
+    $('ranking-open').disabled = false
   } catch (error) { $('loading').hidden = true; $('error-view').hidden = false; $('error-message').textContent = error.message }
 }
 
@@ -108,5 +224,17 @@ $('stock-search').addEventListener('input', event => renderSearch(event.target.v
 $('stock-search').addEventListener('focus', event => renderSearch(event.target.value))
 document.addEventListener('click', event => { if (!event.target.closest('.search-wrap')) $('search-results').hidden = true })
 $('tabs').addEventListener('click', event => { const button=event.target.closest('[data-tab]'); if(!button)return; document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('active',x===button)); document.querySelectorAll('.tab-panel').forEach(x=>x.classList.toggle('active',x.id===`panel-${button.dataset.tab}`)) })
+$('ranking-open').addEventListener('click', openRanking)
+$('ranking-close').addEventListener('click', () => {
+  state.ranking.requestId += 1
+  state.ranking.loading = false
+  $('ranking-view').hidden = true
+  if (state.data) $('company-view').hidden = false
+})
+$('ranking-types').addEventListener('click', event => { const button = event.target.closest('[data-ranking-kind]'); if (!button) return; state.ranking.kind = button.dataset.rankingKind; loadRanking() })
+$('ranking-years').addEventListener('click', event => { const button = event.target.closest('[data-ranking-years]'); if (!button) return; state.ranking.years = Number(button.dataset.rankingYears); loadRanking() })
+$('ranking-search').addEventListener('input', () => { state.ranking.visible = 100; renderRanking() })
+$('ranking-list').addEventListener('click', event => { const button = event.target.closest('[data-ranking-code]'); if (button) selectCompany(button.dataset.rankingCode) })
+$('ranking-more').addEventListener('click', () => { state.ranking.visible += 100; renderRanking() })
 if ('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register(`${basePath}sw.js`).catch(()=>{}))
 init()

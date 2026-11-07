@@ -11,9 +11,24 @@ from typing import Any, Callable
 Progress = Callable[[str], None]
 
 
+def _quote_market_id(code: str) -> int:
+    if code.startswith(("4", "8", "92")):
+        return 0
+    return 1 if code.startswith(("5", "6", "9")) else 0
+
+
+def _quote_rows(payload: dict[str, Any], label: str) -> list[dict[str, Any]]:
+    data = payload.get("data")
+    rows = data.get("diff") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"东方财富{label}返回无效")
+    return rows
+
+
 class EastmoneyClient:
     STOCK_URL = "https://82.push2.eastmoney.com/api/qt/clist/get"
     STOCK_URLS = tuple(f"https://{host}.push2.eastmoney.com/api/qt/clist/get" for host in (82, 28, 33, 80))
+    SELECTED_STOCK_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
     SECURITIES_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
     ORG_COLUMNS = (
@@ -83,13 +98,16 @@ class EastmoneyClient:
             "fltt": 2,
             "invt": 2,
             "fid": "f12",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
             "fields": "f2,f3,f12,f13,f14,f20,f21,f100",
         }
         first = self._request(self.STOCK_URLS[0], params)
         data = first.get("data") or {}
-        rows = list(data.get("diff") or [])
-        total = int(data.get("total") or len(rows))
+        rows = list(_quote_rows(first, "行情目录"))
+        raw_total = data.get("total")
+        if not isinstance(raw_total, int) or isinstance(raw_total, bool) or raw_total < len(rows):
+            raise RuntimeError("东方财富行情目录总数无效")
+        total = raw_total
         effective_page_size = max(1, len(rows))
         pages = max(1, (total + effective_page_size - 1) // effective_page_size)
         self.progress(f"A股目录: 1/{pages} · {len(rows)}/{total}")
@@ -99,8 +117,28 @@ class EastmoneyClient:
             if self.min_interval > 0:
                 time.sleep(max(0.0, 0.8 - self.min_interval))
             payload = self._request(self.STOCK_URLS[(page - 1) % len(self.STOCK_URLS)], current)
-            rows.extend((payload.get("data") or {}).get("diff") or [])
+            rows.extend(_quote_rows(payload, f"行情目录第{page}页"))
             self.progress(f"A股目录: {page}/{pages} · {len(rows)}/{total}")
+        unique_codes = {str(row.get("f12") or "") for row in rows if row.get("f12")}
+        if len(unique_codes) < total:
+            raise RuntimeError(f"行情目录不完整: 预期 {total}，实际 {len(unique_codes)}")
+        return rows
+
+    def fetch_selected_stock_quotes(self, codes: set[str]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        secids = [f"{_quote_market_id(code)}.{code}" for code in sorted(codes)]
+        for start in range(0, len(secids), 100):
+            payload = self._request(self.SELECTED_STOCK_URL, {
+                "secids": ",".join(secids[start:start + 100]),
+                "fields": "f2,f3,f12,f13,f14,f20,f21,f100",
+                "fltt": 2,
+                "invt": 2,
+            })
+            rows.extend(_quote_rows(payload, "指定股票行情"))
+        found = {str(row.get("f12") or "") for row in rows if row.get("f12")}
+        missing = sorted(codes - found)
+        if missing:
+            raise RuntimeError(f"行情缺少 {', '.join(missing)}")
         return rows
 
     def fetch_org_directory(self, codes: set[str] | None = None) -> list[dict[str, Any]]:

@@ -25,12 +25,36 @@
       <h1>一眼看懂公司的<br><em>财务质量与分红。</em></h1>
       <p>覆盖沪深北全部A股，财务指标、现金流、资产负债与历年分红集中浏览。</p>
       <div class="search-wrap">
-        <label class="search-box" for="stock-search"><span>⌕</span><input id="stock-search" type="search" placeholder="输入代码、公司名称或拼音" autocomplete="off" enterkeyhint="search"><kbd>搜索</kbd></label>
+        <label class="search-box" for="stock-search"><span>⌕</span><input id="stock-search" type="search" placeholder="输入代码、公司名称或拼音" autocomplete="off" enterkeyhint="search" disabled><kbd>搜索</kbd></label>
         <div class="search-results" id="search-results" hidden></div>
       </div>
+      <button class="ranking-launch" id="ranking-open" type="button" disabled><span>↗</span><strong>打开全市场排行榜</strong><small>分红率 · 经营业绩 · 1/3/5/10年</small></button>
     </section>
 
     <section id="loading" class="loading-card"><div class="spinner"></div><strong>正在载入市场数据</strong><span>首次打开只需几秒</span></section>
+
+    <section id="ranking-view" class="ranking-view" hidden>
+      <div class="ranking-heading">
+        <div><p class="eyebrow">A-SHARE RANKING</p><h2>全市场排行榜</h2><p id="ranking-description"></p></div>
+        <button id="ranking-close" class="ranking-close" type="button">返回个股</button>
+      </div>
+      <div class="ranking-controls card">
+        <div class="ranking-types" id="ranking-types" aria-label="排行榜类型">
+          <button class="active" data-ranking-kind="dividend" type="button">历史分红率</button>
+          <button data-ranking-kind="performance" type="button">经营业绩</button>
+        </div>
+        <div class="ranking-years" id="ranking-years" aria-label="时间范围">
+          <button data-ranking-years="1" type="button">1年</button>
+          <button class="active" data-ranking-years="3" type="button">3年</button>
+          <button data-ranking-years="5" type="button">5年</button>
+          <button data-ranking-years="10" type="button">10年</button>
+        </div>
+        <label class="ranking-search" for="ranking-search"><span>⌕</span><input id="ranking-search" type="search" placeholder="在排名中搜索公司、代码或行业" autocomplete="off"></label>
+      </div>
+      <div class="ranking-status" id="ranking-status"></div>
+      <div class="ranking-list" id="ranking-list"></div>
+      <button class="ranking-more" id="ranking-more" type="button" hidden>加载更多</button>
+    </section>
 
     <article id="company-view" hidden>
       <section class="company-head card">
