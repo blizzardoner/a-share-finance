@@ -361,6 +361,18 @@ class FundDatasetTests(unittest.TestCase):
                 )
             self.assertFalse((root / "escape.json").exists())
 
+    def test_write_fund_dataset_counts_reports_only_for_published_funds(self):
+        funds = [{"code": "000001", "name": "入选基金"}]
+        reports = {
+            "000001": [{"parse_status": "parsed"}],
+            "000002": [{"parse_status": "parsed"}, {"parse_status": "parse_failed"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata = write_fund_dataset(Path(tmp), funds, reports, [], [], "2026-11-08T00:00:00Z")
+
+        self.assertEqual(metadata["report_count"], 1)
+        self.assertEqual(metadata["parse_failure_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

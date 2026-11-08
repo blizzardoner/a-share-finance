@@ -353,16 +353,17 @@ def write_fund_dataset(
     invalid_codes = [str(fund.get("code") or "") for fund in funds if not re.fullmatch(r"\d{6}", str(fund.get("code") or ""))]
     if invalid_codes:
         raise ValueError(f"基金代码必须为六位数字: {', '.join(invalid_codes)}")
+    published_reports = [reports_by_fund.get(str(fund["code"]), []) for fund in funds]
     fund_dir = output / "funds"
     if fund_dir.exists():
         shutil.rmtree(fund_dir)
     metadata = {
         "generated_at": generated_at,
         "fund_count": len(funds),
-        "report_count": sum(len(reports) for reports in reports_by_fund.values()),
+        "report_count": sum(len(reports) for reports in published_reports),
         "parse_failure_count": sum(
             report.get("parse_status") != "parsed"
-            for reports in reports_by_fund.values()
+            for reports in published_reports
             for report in reports
         ),
         "event_count": len(events),
