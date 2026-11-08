@@ -145,6 +145,26 @@ class DatasetTests(unittest.TestCase):
                 [{"code": "000001", "market_cap": 100}, {"code": "600519", "market_cap": 100}],
             )
 
+    def test_merge_stock_quotes_filters_small_unpriced_drift_but_rejects_low_cap_coverage(self):
+        stocks = [{"code": f"{index:06d}"} for index in range(10)]
+        quotes = [
+            {"code": f"{index:06d}", "market_cap": 100 if index < 9 else None}
+            for index in range(10)
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "有效市值覆盖不足 9/10"):
+            merge_stock_quotes(stocks, quotes)
+
+        merged = merge_stock_quotes(stocks, quotes, min_market_cap_coverage=0.9)
+
+        self.assertEqual(len(merged), 9)
+        with self.assertRaisesRegex(RuntimeError, "有效市值覆盖不足 1/2"):
+            merge_stock_quotes(
+                stocks[:2],
+                [{"code": "000000", "market_cap": 100}, {"code": "000001", "market_cap": None}],
+                min_market_cap_coverage=0.9,
+            )
+
     def test_require_market_caps_rejects_current_stocks_missing_usable_quotes(self):
         invalid_values = (None, 0, -1, float("nan"), float("inf"))
         for value in invalid_values:

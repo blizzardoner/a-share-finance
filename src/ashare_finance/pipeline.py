@@ -167,7 +167,10 @@ def filter_recent_companies(
 def merge_stock_quotes(
     stocks: Iterable[dict[str, Any]],
     quotes: Iterable[dict[str, Any]],
+    min_market_cap_coverage: float = 1.0,
 ) -> list[dict[str, Any]]:
+    if not 0 < min_market_cap_coverage <= 1:
+        raise ValueError("min_market_cap_coverage must be within (0, 1]")
     stock_list = list(stocks)
     if not stock_list:
         raise RuntimeError("公司目录为空")
@@ -185,7 +188,7 @@ def merge_stock_quotes(
     if len(overlap_codes) / len(quote_codes) < 0.9:
         raise RuntimeError(f"行情与公司目录重合不足 {len(overlap_codes)}/{len(quote_codes)}")
     market_fields = ("price", "change_pct", "market_cap", "float_market_cap")
-    return [
+    merged = [
         {
             **stock,
             **{
@@ -196,6 +199,10 @@ def merge_stock_quotes(
         for stock in stock_list
         if stock.get("code") in quote_map
     ]
+    priced = [stock for stock in merged if _positive_finite(stock.get("market_cap"))]
+    if len(priced) / len(merged) < min_market_cap_coverage:
+        raise RuntimeError(f"有效市值覆盖不足 {len(priced)}/{len(merged)}")
+    return priced
 
 
 def require_market_caps(stocks: Iterable[dict[str, Any]]) -> None:
