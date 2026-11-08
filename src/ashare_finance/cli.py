@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import EastmoneyClient
+from .fund_pipeline import run_fund_pipeline
 from .pipeline import (
     build_company_documents,
     build_dividend_rankings,
@@ -84,7 +85,14 @@ def fetch_selected(client: EastmoneyClient, stocks: list[dict[str, Any]], since:
     return financials, dividends
 
 
-def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None = None, min_interval: float = 0.12) -> dict[str, Any]:
+def run_pipeline(
+    output: Path,
+    since: str = "2021-01-01",
+    codes: set[str] | None = None,
+    min_interval: float = 0.12,
+    include_funds: bool | None = None,
+    fund_target_count: int = 24,
+) -> dict[str, Any]:
     client = EastmoneyClient(min_interval=min_interval, progress=print)
     as_of = date.today()
     performance_end_year = ranking_end_year(as_of)
@@ -171,11 +179,23 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
         "performance": build_performance_rankings(stocks, annual_financials, performance_end_year),
     }
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    return write_dataset(
+    result = write_dataset(
         output, documents, generated_at,
         rankings=rankings,
         ranking_end_year={"dividend": dividend_end_year, "peg": performance_end_year, "performance": performance_end_year},
     )
+    should_include_funds = codes is None if include_funds is None else include_funds
+    if should_include_funds:
+        fund_result = run_fund_pipeline(
+            output=output,
+            stocks=stocks,
+            dividends=dividends,
+            target_count=fund_target_count,
+            candidate_limit=max(fund_target_count * 4, fund_target_count),
+            generated_at=generated_at,
+        )
+        result = {**result, "fund_count": fund_result["fund_count"], "fund_event_count": fund_result["event_count"]}
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -184,13 +204,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since", default="2021-01-01", help="财务数据起始日期")
     parser.add_argument("--codes", default="", help="仅抓取逗号分隔的股票代码，用于本地验收")
     parser.add_argument("--min-interval", type=float, default=0.12, help="请求最小间隔秒数")
+    parser.add_argument("--fund-target", type=int, default=24, help="基金研究池主投资组合数量")
+    parser.add_argument("--with-funds", action="store_true", help="在--codes快速模式中也生成基金动向数据")
+    parser.add_argument("--skip-funds", action="store_true", help="跳过基金动向数据生成")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     codes = {code.strip() for code in args.codes.split(",") if code.strip()} or None
-    result = run_pipeline(Path(args.output), args.since, codes, args.min_interval)
+    include_funds = args.with_funds or (codes is None and not args.skip_funds)
+    result = run_pipeline(
+        Path(args.output), args.since, codes, args.min_interval,
+        include_funds=include_funds,
+        fund_target_count=args.fund_target,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

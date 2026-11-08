@@ -1,5 +1,18 @@
 const compact = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 })
 
+export function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[character])
+}
+
+export function finiteNumberText(value, digits = null, fallback = '—') {
+  if (value === null || value === undefined || value === '') return fallback
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return digits === null ? String(number) : number.toFixed(digits)
+}
+
 export function formatMoney(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
   const n = Number(value)
@@ -40,6 +53,114 @@ export function shardUrl(basePath, code) {
 export function rankingUrl(basePath, kind, years) {
   const base = basePath.endsWith('/') ? basePath : `${basePath}/`
   return `${base}data/rankings/${kind}-${years}.json`
+}
+
+export function fundDataUrl(basePath, name) {
+  const base = basePath.endsWith('/') ? basePath : `${basePath}/`
+  return `${base}data/funds/${name}.json`
+}
+
+export function createSingleFlightLoader(loadValue) {
+  let loaded = false
+  let value
+  let inFlight = null
+  return {
+    load() {
+      if (loaded) return Promise.resolve(value)
+      if (inFlight) return inFlight
+      try {
+        inFlight = Promise.resolve(loadValue())
+      } catch (error) {
+        inFlight = Promise.reject(error)
+      }
+      inFlight = inFlight
+        .then(result => { loaded = true; value = result; return result })
+        .finally(() => { inFlight = null })
+      return inFlight
+    },
+  }
+}
+
+export function createViewOwner() {
+  let generation = 0
+  let owner = null
+  return {
+    claim(nextOwner) {
+      owner = nextOwner
+      generation += 1
+      return { owner, generation }
+    },
+    invalidate() {
+      owner = null
+      generation += 1
+    },
+    owns(token) {
+      return Boolean(token && token.owner === owner && token.generation === generation)
+    },
+  }
+}
+
+export async function settleOwned(owner, token, task, { success, failure, settled } = {}) {
+  try {
+    const value = await task
+    if (!owner.owns(token)) return
+    success?.(value)
+  } catch (error) {
+    if (!owner.owns(token)) return
+    failure?.(error)
+  }
+  if (owner.owns(token)) settled?.()
+}
+
+export function safeHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+export function safeFundReportUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'https:' && url.hostname === 'pdf.dfcfw.com' ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+const positiveFundEvents = new Set(['CONFIRMED_NEW', 'CONFIRMED_ADD', 'ENTERED_TOP10'])
+const negativeFundEvents = new Set(['CONFIRMED_EXIT', 'CONFIRMED_REDUCE', 'DROPPED_FROM_TOP10'])
+
+export function filterFundRows(rows, query, mode) {
+  const needle = String(query || '').trim().toLowerCase()
+  return rows.filter(row => {
+    if (mode === 'consensus-positive' && row.direction !== 'positive') return false
+    if (mode === 'consensus-negative' && row.direction !== 'negative') return false
+    if (mode === 'events-positive' && !positiveFundEvents.has(row.event_type)) return false
+    if (mode === 'events-negative' && !negativeFundEvents.has(row.event_type)) return false
+    if (!needle) return true
+    return `${row.code || row.stock_code || ''} ${row.name || row.stock_name || ''} ${row.industry || ''} ${row.fund_name || ''} ${row.manager_name || ''}`.toLowerCase().includes(needle)
+  })
+}
+
+export function fundEventText(event) {
+  const labels = {
+    CONFIRMED_NEW: '确认新建仓',
+    CONFIRMED_ADD: '确认增持',
+    ENTERED_TOP10: '新进前十（不等于首次买入）',
+    CONFIRMED_REDUCE: '确认减持',
+    CONFIRMED_EXIT: '确认清仓',
+    DROPPED_FROM_TOP10: '退出前十（不等于清仓）',
+    UNCHANGED: '持股数量基本不变',
+    CENSORED: '披露范围不足，无法判断',
+  }
+  return `${labels[event.event_type] || event.event_type || '未知事件'} · ${event.previous_scope || 'UNKNOWN'} → ${event.current_scope || 'UNKNOWN'}`
+}
+
+export function isNavigableStockCode(code, stocks) {
+  return stocks.some(stock => stock.code === code)
 }
 
 export function joinRankingRows(rows, stocks) {

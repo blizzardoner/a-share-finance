@@ -1,6 +1,6 @@
 import unittest
 
-from ashare_finance.verify_pages import metadata_matches, verify_deployment
+from ashare_finance.verify_pages import FUND_IDENTITY_FIELDS, metadata_matches, verify_deployment
 
 
 class PagesVerificationTests(unittest.TestCase):
@@ -48,6 +48,16 @@ class PagesVerificationTests(unittest.TestCase):
                 delay=0,
                 sleep=lambda _: None,
             )
+
+    def test_fund_metadata_uses_its_own_build_identity_fields(self):
+        expected = {
+            "generated_at": "2026-11-08T00:00:00Z",
+            "fund_count": 24,
+            "report_count": 192,
+            "event_count": 1200,
+        }
+        self.assertTrue(metadata_matches(expected, dict(expected), FUND_IDENTITY_FIELDS))
+        self.assertFalse(metadata_matches(expected, {**expected, "report_count": 191}, FUND_IDENTITY_FIELDS))
 
 
 if __name__ == "__main__":
