@@ -120,7 +120,7 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
             and not str(row.get("SECURITY_NAME_ABBR") or "").endswith("退")
         ]
         quote_rows = [normalize_stock(row) for row in client.fetch_stocks()]
-        stocks = merge_stock_quotes(stocks, quote_rows)
+        stocks = merge_stock_quotes(stocks, quote_rows, min_market_cap_coverage=0.9)
         financial_raw = []
         dividend_raw = []
         for start_date, end_date in year_windows(since, as_of):
