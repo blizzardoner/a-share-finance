@@ -8,6 +8,7 @@ from typing import Any
 
 from .client import EastmoneyClient
 from .pipeline import (
+    add_stock_valuation_metrics,
     build_company_documents,
     build_dividend_rankings,
     build_performance_rankings,
@@ -158,6 +159,7 @@ def run_pipeline(output: Path, since: str = "2021-01-01", codes: set[str] | None
         cutoff = f"{as_of.year - 1}-09-30"
         stocks = filter_recent_companies(stocks, financials, cutoff)
         print(f"近期财报筛选: {len(stocks)} 家（截止线 {cutoff}）")
+    stocks = add_stock_valuation_metrics(stocks, financials)
     require_market_caps(stocks)
     documents = build_company_documents(
         stocks,

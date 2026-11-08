@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from ashare_finance.pipeline import (
+    add_stock_valuation_metrics,
     build_company_documents,
     build_dividend_rankings,
     build_performance_rankings,
@@ -24,11 +25,11 @@ from ashare_finance.pipeline import (
 
 class NormalizationTests(unittest.TestCase):
     def test_normalize_stock_derives_exchange_and_caps(self):
-        row = {"f12": "600519", "f14": "贵州茅台", "f13": 1, "f2": 1500.5, "f3": 1.2, "f20": 1_800_000_000_000, "f21": 1_800_000_000_000, "f100": "白酒"}
+        row = {"f12": "600519", "f14": "贵州茅台", "f13": 1, "f2": 1500.5, "f3": 1.2, "f9": 24.5, "f20": 1_800_000_000_000, "f21": 1_800_000_000_000, "f100": "白酒"}
         self.assertEqual(normalize_stock(row), {
             "code": "600519", "secucode": "600519.SH", "name": "贵州茅台",
             "exchange": "SH", "industry": "白酒", "price": 1500.5,
-            "change_pct": 1.2, "market_cap": 1_800_000_000_000,
+            "change_pct": 1.2, "pe_ratio": 24.5, "market_cap": 1_800_000_000_000,
             "float_market_cap": 1_800_000_000_000,
         })
 
@@ -79,6 +80,26 @@ class NormalizationTests(unittest.TestCase):
 
 
 class DatasetTests(unittest.TestCase):
+    def test_add_stock_valuation_metrics_uses_latest_positive_profit_growth_for_peg(self):
+        stocks = [
+            {"code": "000001", "pe_ratio": 20},
+            {"code": "000002", "pe_ratio": 15},
+            {"code": "000003", "pe_ratio": -10},
+        ]
+        financials = [
+            {"code": "000001", "period": "2025-12-31", "net_profit_yoy": 10},
+            {"code": "000001", "period": "2026-09-30", "net_profit_yoy": 25},
+            {"code": "000002", "period": "2026-09-30", "net_profit_yoy": -5},
+            {"code": "000003", "period": "2026-09-30", "net_profit_yoy": 20},
+        ]
+
+        enriched = add_stock_valuation_metrics(stocks, financials)
+
+        self.assertAlmostEqual(enriched[0]["peg"], 0.8)
+        self.assertEqual(enriched[0]["peg_growth_yoy"], 25)
+        self.assertIsNone(enriched[1]["peg"])
+        self.assertIsNone(enriched[2]["peg"])
+
     def test_ranking_end_year_waits_for_annual_report_deadline(self):
         self.assertEqual(ranking_end_year(date(2026, 4, 30)), 2024)
         self.assertEqual(ranking_end_year(date(2026, 5, 1)), 2025)
@@ -94,7 +115,7 @@ class DatasetTests(unittest.TestCase):
         }]
         quotes = [{
             "code": "600519", "name": "贵州茅台", "industry": "饮料制造",
-            "price": 1500.5, "market_cap": 1_800_000_000_000, "change_pct": 1.2,
+            "price": 1500.5, "pe_ratio": 24.5, "market_cap": 1_800_000_000_000, "change_pct": 1.2,
         }]
 
         merged = merge_stock_quotes(stocks, quotes)
@@ -102,6 +123,7 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(merged[0]["listing_date"], "2001-08-27")
         self.assertEqual(merged[0]["industry"], "白酒")
         self.assertEqual(merged[0]["price"], 1500.5)
+        self.assertEqual(merged[0]["pe_ratio"], 24.5)
         self.assertEqual(merged[0]["market_cap"], 1_800_000_000_000)
 
     def test_merge_stock_quotes_excludes_directory_rows_outside_current_quote_universe(self):
