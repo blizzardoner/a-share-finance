@@ -7,6 +7,7 @@ import {
   formatPercent,
   joinRankingRows,
   rankingMetricText,
+  rankingValueText,
   rankRankingRows,
   rankingUrl,
   searchStocks,
@@ -78,13 +79,11 @@ function rankingDescription() {
   if (state.ranking.kind === 'dividend') {
     return `过去${state.ranking.years}个完整财年的平均现金分红 ÷ 当前总市值；未分红年度按0计。`
   }
+  if (state.ranking.kind === 'peg') {
+    const growth = state.ranking.years === 1 ? '最近两个完整财年的归母净利润增长率' : `过去${state.ranking.years}个完整财年的归母净利润CAGR`
+    return `PEG按从低到高排序：当前动态PE ÷ ${growth}；不可计算项列于有效排名之后。`
+  }
   return '综合得分：营收CAGR 30% + 归母净利润CAGR 30% + 平均ROE 30% + 盈利年份占比 10%。'
-}
-
-function rankingPercent(value, signed = false) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
-  const number = Number(value)
-  return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
 }
 
 function rankingFilterNumber(id, scale = 1) {
@@ -95,20 +94,19 @@ function rankingFilterNumber(id, scale = 1) {
 }
 
 function rankingFilterOptions() {
+  const pegRanking = state.ranking.kind === 'peg'
   return {
     minMarketCap: rankingFilterNumber('ranking-cap-min', 1e8),
     maxMarketCap: rankingFilterNumber('ranking-cap-max', 1e8),
-    minPeg: rankingFilterNumber('ranking-peg-min'),
-    maxPeg: rankingFilterNumber('ranking-peg-max'),
+    minPeg: pegRanking ? rankingFilterNumber('ranking-peg-min') : null,
+    maxPeg: pegRanking ? rankingFilterNumber('ranking-peg-max') : null,
   }
 }
 
 function rankingRow(row) {
-  const dividend = state.ranking.kind === 'dividend'
-  const value = dividend ? rankingPercent(row.yield) : Number(row.score).toFixed(1)
-  const label = dividend ? '平均分红率' : '综合得分'
+  const { value, label } = rankingValueText(state.ranking.kind, row)
   const details = rankingMetricText(state.ranking.kind, row, state.ranking.years)
-  return `<button class="ranking-row" data-ranking-code="${row.code}" type="button"><span class="ranking-position">${row.rank}</span><span class="ranking-company"><strong>${escapeHtml(row.name)}</strong><small>${row.code} · ${escapeHtml(row.industry || row.exchange)}</small><em>${details}</em></span><span class="ranking-value"><strong>${value}</strong><small>${label}</small></span></button>`
+  return `<button class="ranking-row" data-ranking-code="${row.code}" type="button"><span class="ranking-position">${row.rank ?? '—'}</span><span class="ranking-company"><strong>${escapeHtml(row.name)}</strong><small>${row.code} · ${escapeHtml(row.industry || row.exchange)}</small><em>${escapeHtml(details)}</em></span><span class="ranking-value"><strong>${value}</strong><small>${label}</small></span></button>`
 }
 
 function renderRanking() {
@@ -117,7 +115,12 @@ function renderRanking() {
   const filtered = filterRankingRows(state.ranking.rows, $('ranking-search').value, rankingFilterOptions())
   const visible = filtered.slice(0, state.ranking.visible)
   const endYear = state.ranking.meta?.end_year || '—'
-  $('ranking-status').textContent = `统计截至${endYear}财年 · ${filtered.length.toLocaleString()}家公司符合完整数据要求`
+  if (state.ranking.kind === 'peg') {
+    const valid = filtered.filter(row => row.peg != null).length
+    $('ranking-status').textContent = `统计截至${endYear}财年 · ${valid.toLocaleString()}家可计算PEG · ${(filtered.length - valid).toLocaleString()}家不可计算（列于后部）`
+  } else {
+    $('ranking-status').textContent = `统计截至${endYear}财年 · ${filtered.length.toLocaleString()}家公司符合完整数据要求`
+  }
   $('ranking-list').innerHTML = visible.map(rankingRow).join('') || '<div class="data-card empty">没有符合条件的公司</div>'
   $('ranking-more').hidden = visible.length >= filtered.length
 }
@@ -125,6 +128,10 @@ function renderRanking() {
 function syncRankingControls() {
   document.querySelectorAll('[data-ranking-kind]').forEach(button => button.classList.toggle('active', button.dataset.rankingKind === state.ranking.kind))
   document.querySelectorAll('[data-ranking-years]').forEach(button => button.classList.toggle('active', Number(button.dataset.rankingYears) === state.ranking.years))
+  $('ranking-peg-range').hidden = state.ranking.kind !== 'peg'
+  $('ranking-filter-note').textContent = state.ranking.kind === 'peg'
+    ? 'PEG区间使用当前所选1/3/5/10年增长口径；PE、增长率、公式和利润起止值显示在每行。'
+    : '可按当前总市值筛选；切换到PEG排行可查看对应周期的完整计算明细。'
 }
 
 async function loadRanking() {

@@ -165,31 +165,6 @@ def filter_recent_companies(
     return [stock for stock in stocks if stock.get("code") in recent_codes]
 
 
-def add_stock_valuation_metrics(
-    stocks: Iterable[dict[str, Any]],
-    financials: Iterable[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
-    for row in financials:
-        code = str(row.get("code") or "")
-        period = str(row.get("period") or "")
-        if not code or not period:
-            continue
-        current = latest.get(code)
-        if current is None or (period, row.get("notice_date") or "") > (
-            current.get("period") or "",
-            current.get("notice_date") or "",
-        ):
-            latest[code] = row
-    enriched: list[dict[str, Any]] = []
-    for stock in stocks:
-        growth = _num(latest.get(str(stock.get("code")), {}).get("net_profit_yoy"))
-        pe_ratio = _num(stock.get("pe_ratio"))
-        peg = pe_ratio / growth if _positive_finite(pe_ratio) and _positive_finite(growth) else None
-        enriched.append({**stock, "peg": peg, "peg_growth_yoy": growth})
-    return enriched
-
-
 def merge_stock_quotes(
     stocks: Iterable[dict[str, Any]],
     quotes: Iterable[dict[str, Any]],
@@ -310,6 +285,82 @@ def _percentiles(rows: list[dict[str, Any]], key: str) -> dict[str, float]:
             result[code] = percentile
         index = end
     return result
+
+
+def build_peg_rankings(
+    stocks: Iterable[dict[str, Any]],
+    annual_financials: Iterable[dict[str, Any]],
+    end_year: int,
+    periods: tuple[int, ...] = (1, 3, 5, 10),
+) -> dict[int, list[dict[str, Any]]]:
+    by_company: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    for row in annual_financials:
+        period = row.get("period") or ""
+        if period[:4].isdigit() and (
+            row.get("report_type") == "年报" or period.endswith("-12-31")
+        ):
+            by_company[str(row.get("code"))][int(period[:4])] = row
+
+    rankings: dict[int, list[dict[str, Any]]] = {}
+    stock_list = list(stocks)
+    for years in periods:
+        start_year = end_year - years
+        year_range = range(start_year, end_year + 1)
+        rows: list[dict[str, Any]] = []
+        for stock in stock_list:
+            company = by_company.get(stock["code"], {})
+            required = [company.get(year) for year in year_range]
+            listed_for_window = _listed_for_full_window(stock, start_year)
+            pe_ratio = _num(stock.get("pe_ratio"))
+            profits = [_num(row.get("net_profit")) if row is not None else None for row in required]
+            item = {
+                "code": stock["code"],
+                "pe_ratio": pe_ratio,
+                "profit_growth_pct": None,
+                "peg": None,
+                "start_year": start_year,
+                "end_year": end_year,
+                "start_profit": profits[0],
+                "end_profit": profits[-1],
+                "invalid_reason": None,
+            }
+            data_reason = None
+            if not listed_for_window:
+                data_reason = f"上市时间不足{years}年"
+            elif any(row is None for row in required):
+                missing_year = next(year for year, row in zip(year_range, required) if row is None)
+                data_reason = f"缺少{missing_year}年年报"
+            elif any(value is None for value in profits):
+                missing_year = next(year for year, value in zip(year_range, profits) if value is None)
+                data_reason = f"{missing_year}年归母净利润缺失"
+            elif any(not _positive_finite(value) for value in profits):
+                invalid_year = next(year for year, value in zip(year_range, profits) if not _positive_finite(value))
+                data_reason = f"{invalid_year}年归母净利润非正"
+            else:
+                start_profit, end_profit = profits[0], profits[-1]
+                growth = ((end_profit / start_profit) ** (1 / years) - 1) * 100
+                item["profit_growth_pct"] = growth
+                if not _positive_finite(growth):
+                    growth_name = "1年增长率" if years == 1 else f"{years}年CAGR"
+                    data_reason = f"归母净利润{growth_name}非正"
+
+            if data_reason and not listed_for_window:
+                item["invalid_reason"] = data_reason
+            elif pe_ratio is None:
+                item["invalid_reason"] = "动态市盈率缺失"
+            elif not _positive_finite(pe_ratio):
+                item["invalid_reason"] = "动态市盈率非正"
+            elif data_reason:
+                item["invalid_reason"] = data_reason
+            else:
+                item["peg"] = pe_ratio / item["profit_growth_pct"]
+            rows.append(item)
+        rankings[years] = sorted(rows, key=lambda row: (
+            row["peg"] is None,
+            row["peg"] if row["peg"] is not None else 0,
+            row["code"],
+        ))
+    return rankings
 
 
 def build_performance_rankings(
