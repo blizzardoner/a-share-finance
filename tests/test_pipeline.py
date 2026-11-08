@@ -128,6 +128,23 @@ class DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "公司目录为空"):
             merge_stock_quotes([], [])
 
+    def test_merge_stock_quotes_tolerates_small_cross_source_identity_drift(self):
+        stocks = [{"code": f"00000{index}"} for index in range(1, 10)]
+        quotes = [
+            *({"code": f"00000{index}", "market_cap": 100} for index in range(1, 10)),
+            {"code": "600519", "market_cap": 1_800_000_000_000},
+        ]
+
+        merged = merge_stock_quotes(stocks, quotes)
+
+        self.assertEqual(len(merged), 9)
+
+        with self.assertRaisesRegex(RuntimeError, "行情与公司目录重合不足 1/2"):
+            merge_stock_quotes(
+                [{"code": "000001"}],
+                [{"code": "000001", "market_cap": 100}, {"code": "600519", "market_cap": 100}],
+            )
+
     def test_require_market_caps_rejects_current_stocks_missing_usable_quotes(self):
         invalid_values = (None, 0, -1, float("nan"), float("inf"))
         for value in invalid_values:

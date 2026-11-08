@@ -175,11 +175,15 @@ def merge_stock_quotes(
     if not quote_map:
         raise RuntimeError("当前行情目录为空")
     directory_codes = {stock.get("code") for stock in stock_list if stock.get("code")}
-    missing_directory = sorted(set(quote_map) - directory_codes)
-    if missing_directory:
+    quote_codes = set(quote_map)
+    overlap_codes = quote_codes & directory_codes
+    missing_directory = sorted(quote_codes - directory_codes)
+    if not overlap_codes:
         preview = ", ".join(missing_directory[:10])
         suffix = f" 等{len(missing_directory)}家" if len(missing_directory) > 10 else ""
         raise RuntimeError(f"行情代码缺少公司目录 {preview}{suffix}")
+    if len(overlap_codes) / len(quote_codes) < 0.9:
+        raise RuntimeError(f"行情与公司目录重合不足 {len(overlap_codes)}/{len(quote_codes)}")
     market_fields = ("price", "change_pct", "market_cap", "float_market_cap")
     return [
         {
