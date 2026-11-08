@@ -29,6 +29,7 @@
         <div class="search-results" id="search-results" hidden></div>
       </div>
       <button class="ranking-launch" id="ranking-open" type="button" disabled><span>↗</span><strong>打开全市场排行榜</strong><small>分红率 · 经营业绩 · PEG · 1/3/5/10年</small></button>
+      <button class="fund-launch" id="fund-open" type="button" disabled><span>◎</span><strong>打开基金动向 Beta</strong><small>共同关注 · 确认新建 · 增减持 · 原始报告证据</small></button>
     </section>
 
     <section id="loading" class="loading-card"><div class="spinner"></div><strong>正在载入市场数据</strong><span>首次打开只需几秒</span></section>
@@ -63,6 +64,27 @@
       <button class="ranking-more" id="ranking-more" type="button" hidden>加载更多</button>
     </section>
 
+    <section id="fund-view" class="fund-view" hidden>
+      <div class="ranking-heading">
+        <div><p class="eyebrow">FUND HOLDING SIGNALS</p><h2>基金动向</h2><p>筛选长期表现靠前的主动权益基金，区分完整持仓与季度前十大，不把未披露误判为清仓。</p></div>
+        <button id="fund-close" class="ranking-close" type="button">返回个股</button>
+      </div>
+      <div class="fund-controls card">
+        <div class="fund-modes" id="fund-modes" aria-label="基金动向类型">
+          <button class="active" data-fund-mode="consensus-positive" type="button">正向共识</button>
+          <button data-fund-mode="consensus-negative" type="button">负向共识</button>
+          <button data-fund-mode="events-positive" type="button">正向持仓信号</button>
+          <button data-fund-mode="events-negative" type="button">负向持仓信号</button>
+          <button data-fund-mode="universe" type="button">研究池</button>
+        </div>
+        <label class="ranking-search" for="fund-search"><span>⌕</span><input id="fund-search" type="search" placeholder="搜索股票、基金或经理" autocomplete="off"></label>
+        <p class="ranking-filter-note">研究池筛选分不是基金评级；季报未出现只代表未进入前十大，完整中报/年报才可确认新建或清仓。</p>
+      </div>
+      <div class="ranking-status" id="fund-status"></div>
+      <div class="fund-list" id="fund-list"></div>
+      <button class="ranking-more" id="fund-more" type="button" hidden>加载更多</button>
+    </section>
+
     <article id="company-view" hidden>
       <section class="company-head card">
         <div class="company-title"><div><span class="exchange" id="stock-exchange">—</span><span class="industry" id="stock-industry">—</span></div><h2 id="stock-name">—</h2><p><b id="stock-code">—</b><span id="stock-listing">—</span></p></div>
@@ -81,12 +103,14 @@
         <button data-tab="balance">资产负债</button>
         <button data-tab="cashflow">现金流</button>
         <button data-tab="dividend">分红记录</button>
+        <button data-tab="funds">基金动向</button>
       </nav>
 
       <section class="tab-panel active" id="panel-overview"></section>
       <section class="tab-panel" id="panel-balance"></section>
       <section class="tab-panel" id="panel-cashflow"></section>
       <section class="tab-panel" id="panel-dividend"></section>
+      <section class="tab-panel" id="panel-funds"></section>
     </article>
 
     <section id="error-view" class="error-card" hidden><strong>数据暂时无法读取</strong><p id="error-message"></p><button onclick="location.reload()">重新加载</button></section>

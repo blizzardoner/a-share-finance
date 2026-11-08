@@ -2,17 +2,35 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   annualRows,
+  createSingleFlightLoader,
+  createViewOwner,
   deriveHighlights,
+  escapeHtml,
+  settleOwned,
+  filterFundRows,
   filterRankingRows,
+  finiteNumberText,
   formatMoney,
+  fundDataUrl,
+  fundEventText,
+  isNavigableStockCode,
   joinRankingRows,
   rankingMetricText,
   rankingValueText,
   rankRankingRows,
   rankingUrl,
+  safeFundReportUrl,
+  safeHttpUrl,
   searchStocks,
   shardUrl,
 } from '../public/lib.js'
+
+const deferred = () => {
+  let resolve
+  let reject
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail })
+  return { promise, resolve, reject }
+}
 
 test('formatMoney renders Chinese financial units', () => {
   assert.equal(formatMoney(1_250_000_000), '12.50亿')
@@ -170,4 +188,112 @@ test('performance metric text explains the selected period and all score inputs'
     }, 10),
     '市值 250.00亿 · 10年营收CAGR +17.80% · 归母净利CAGR +18.17% · 平均ROE 31.92% · 盈利10/10年',
   )
+})
+
+test('fundDataUrl is GitHub Pages subpath safe', () => {
+  assert.equal(fundDataUrl('/a-share-finance/', 'consensus'), '/a-share-finance/data/funds/consensus.json')
+  assert.equal(fundDataUrl('/a-share-finance', 'events'), '/a-share-finance/data/funds/events.json')
+})
+
+test('filterFundRows separates positive and negative consensus and searches locally', () => {
+  const rows = [
+    { code: '600001', name: '正向公司', direction: 'positive', industry: '机械' },
+    { code: '600002', name: '负向公司', direction: 'negative', industry: '医药' },
+  ]
+  assert.deepEqual(filterFundRows(rows, '', 'consensus-positive').map(row => row.code), ['600001'])
+  assert.deepEqual(filterFundRows(rows, '', 'consensus-negative').map(row => row.code), ['600002'])
+  assert.deepEqual(filterFundRows(rows, '机械', 'consensus-positive').map(row => row.code), ['600001'])
+})
+
+test('fund event text states evidence scope instead of calling every top10 entry a new position', () => {
+  assert.equal(
+    fundEventText({ event_type: 'ENTERED_TOP10', previous_scope: 'TOP10', current_scope: 'TOP10' }),
+    '新进前十（不等于首次买入） · TOP10 → TOP10',
+  )
+  assert.equal(
+    fundEventText({ event_type: 'CONFIRMED_NEW', previous_scope: 'FULL', current_scope: 'TOP10' }),
+    '确认新建仓 · FULL → TOP10',
+  )
+})
+
+test('fund events navigate only to stocks present in the current A-share directory', () => {
+  const stocks = [{ code: '600519' }, { code: '000001' }]
+  assert.equal(isNavigableStockCode('600519', stocks), true)
+  assert.equal(isNavigableStockCode('00700', stocks), false)
+  assert.equal(isNavigableStockCode('退市股', stocks), false)
+  assert.equal(isNavigableStockCode('600999', stocks), false)
+})
+
+test('safeHttpUrl accepts report web links and rejects executable schemes', () => {
+  assert.equal(safeHttpUrl('https://example.test/report.pdf'), 'https://example.test/report.pdf')
+  assert.equal(safeHttpUrl('http://example.test/report.pdf'), 'http://example.test/report.pdf')
+  assert.equal(safeHttpUrl('javascript:alert(1)'), null)
+  assert.equal(safeHttpUrl('data:text/html,boom'), null)
+})
+
+test('fund report URLs allow only HTTPS links on the exact Eastmoney PDF host', () => {
+  assert.equal(safeFundReportUrl('https://pdf.dfcfw.com/pdf/H2_AN.pdf'), 'https://pdf.dfcfw.com/pdf/H2_AN.pdf')
+  assert.equal(safeFundReportUrl('http://pdf.dfcfw.com/report.pdf'), null)
+  assert.equal(safeFundReportUrl('https://pdf.dfcfw.com.evil.test/report.pdf'), null)
+  assert.equal(safeFundReportUrl('https://pdf.dfcfw.com@evil.test/report.pdf'), null)
+  assert.equal(safeFundReportUrl('https://example.test/report.pdf'), null)
+})
+
+test('HTML and numeric helpers neutralize untrusted values before template insertion', () => {
+  assert.equal(escapeHtml(`<img src=x onerror='boom'>&\"`), '&lt;img src=x onerror=&#39;boom&#39;&gt;&amp;&quot;')
+  assert.equal(finiteNumberText('12.345', 2), '12.35')
+  assert.equal(finiteNumberText('<img src=x>'), '—')
+  assert.equal(finiteNumberText(Infinity), '—')
+})
+
+test('single-flight loader reuses the same in-flight promise and cached result', async () => {
+  const pending = deferred()
+  let calls = 0
+  const loader = createSingleFlightLoader(() => { calls += 1; return pending.promise })
+
+  const first = loader.load()
+  const second = loader.load()
+  assert.equal(first, second)
+  assert.equal(calls, 1)
+
+  pending.resolve({ rows: [1] })
+  assert.deepEqual(await first, { rows: [1] })
+  assert.deepEqual(await loader.load(), { rows: [1] })
+  assert.equal(calls, 1)
+})
+
+test('view ownership invalidates older opens, closes, and company panel renders', () => {
+  const owner = createViewOwner()
+  const firstOpen = owner.claim('fund-view')
+  const repeatedOpen = owner.claim('fund-view')
+  assert.equal(owner.owns(firstOpen), false)
+  assert.equal(owner.owns(repeatedOpen), true)
+
+  owner.invalidate()
+  assert.equal(owner.owns(repeatedOpen), false)
+
+  const companyA = owner.claim('company:000001')
+  const companyB = owner.claim('company:600519')
+  assert.equal(owner.owns(companyA), false)
+  assert.equal(owner.owns(companyB), true)
+})
+
+test('owned async work suppresses stale render, error, and scroll effects', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const owner = createViewOwner()
+    const token = owner.claim('fund-view')
+    const pending = deferred()
+    const effects = []
+    const work = settleOwned(owner, token, pending.promise, {
+      success: () => effects.push('render'),
+      failure: () => effects.push('error'),
+      settled: () => effects.push('scroll'),
+    })
+
+    owner.claim('ranking-view')
+    if (outcome === 'resolve') pending.resolve('ok')
+    else pending.reject(new Error('late failure'))
+    await work
+    assert.deepEqual(effects, [])
+  }
 })

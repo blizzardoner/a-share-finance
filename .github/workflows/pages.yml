@@ -41,7 +41,17 @@ jobs:
       - name: Run browser logic tests
         run: npm run check
 
+      - name: Restore immutable fund report cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: .cache/fund-reports
+          key: fund-reports-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            fund-reports-${{ runner.os }}-
+
       - name: Fetch current A-share finance and dividend data
+        env:
+          ASHARE_FUND_CACHE_DIR: .cache/fund-reports
         run: ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30
 
       - name: Configure GitHub Pages
@@ -63,5 +73,7 @@ jobs:
           python -m ashare_finance.verify_pages
           --expected public/data/meta.json
           --url "${PAGE_URL%/}/data/meta.json"
+          --expected-funds public/data/funds/meta.json
+          --fund-url "${PAGE_URL%/}/data/funds/meta.json"
           --attempts 20
           --delay 15
