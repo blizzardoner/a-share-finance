@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from collections import defaultdict
 from datetime import date
@@ -16,6 +17,11 @@ def _date(value: Any) -> str | None:
 
 def _num(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) else None
+
+
+def _positive_finite(value: Any) -> bool:
+    number = _num(value)
+    return number is not None and math.isfinite(float(number)) and number > 0
 
 
 def _exchange(code: str, market_id: Any = None) -> str:
@@ -162,17 +168,29 @@ def merge_stock_quotes(
     stocks: Iterable[dict[str, Any]],
     quotes: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    stock_list = list(stocks)
+    if not stock_list:
+        raise RuntimeError("公司目录为空")
     quote_map = {quote.get("code"): quote for quote in quotes if quote.get("code")}
+    if not quote_map:
+        raise RuntimeError("当前行情目录为空")
+    directory_codes = {stock.get("code") for stock in stock_list if stock.get("code")}
+    missing_directory = sorted(set(quote_map) - directory_codes)
+    if missing_directory:
+        preview = ", ".join(missing_directory[:10])
+        suffix = f" 等{len(missing_directory)}家" if len(missing_directory) > 10 else ""
+        raise RuntimeError(f"行情代码缺少公司目录 {preview}{suffix}")
     market_fields = ("price", "change_pct", "market_cap", "float_market_cap")
     return [
         {
             **stock,
             **{
-                field: quote_map.get(stock.get("code"), {}).get(field)
+                field: quote_map[stock["code"]].get(field)
                 for field in market_fields
             },
         }
-        for stock in stocks
+        for stock in stock_list
+        if stock.get("code") in quote_map
     ]
 
 
@@ -180,7 +198,7 @@ def require_market_caps(stocks: Iterable[dict[str, Any]]) -> None:
     missing = [
         str(stock.get("code"))
         for stock in stocks
-        if not _num(stock.get("market_cap")) or float(stock["market_cap"]) <= 0
+        if not _positive_finite(stock.get("market_cap"))
     ]
     if missing:
         preview = ", ".join(missing[:10])
