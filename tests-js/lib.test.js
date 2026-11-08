@@ -67,8 +67,8 @@ test('rankingUrl selects one precomputed ranking file for the active range', () 
 
 test('ranking rows join stock identity and filter locally without extra data', () => {
   const stocks = [
-    { code: '000001', name: '平安银行', industry: '银行' },
-    { code: '600519', name: '贵州茅台', industry: '白酒' },
+    { code: '000001', name: '平安银行', industry: '银行', market_cap: 250e8, peg: 0.8 },
+    { code: '600519', name: '贵州茅台', industry: '白酒', market_cap: 18_000e8, peg: 1.6 },
   ]
   const joined = joinRankingRows([
     { code: '600519', yield: 4.2 },
@@ -79,6 +79,12 @@ test('ranking rows join stock identity and filter locally without extra data', (
   assert.deepEqual(joined.map(row => row.name), ['贵州茅台', '平安银行'])
   assert.deepEqual(filterRankingRows(joined, '银行').map(row => row.code), ['000001'])
   assert.deepEqual(filterRankingRows(joined, '6005').map(row => row.code), ['600519'])
+  assert.deepEqual(filterRankingRows(joined, '', { minMarketCap: 200e8, maxMarketCap: 500e8 }).map(row => row.code), ['000001'])
+  assert.deepEqual(filterRankingRows(joined, '', { minPeg: 1, maxPeg: 2 }).map(row => row.code), ['600519'])
+  assert.deepEqual(
+    filterRankingRows([...joined, { code: '000002', name: '无PEG', market_cap: 300e8, peg: null }], '', { maxPeg: 1 }).map(row => row.code),
+    ['000001'],
+  )
 })
 
 test('ranking rows use competition ranks for equal metrics', () => {
@@ -94,11 +100,13 @@ test('ranking rows use competition ranks for equal metrics', () => {
 test('performance metric text explains the selected period and all score inputs', () => {
   assert.equal(
     rankingMetricText('performance', {
+      market_cap: 250e8,
+      peg: 1.35,
       revenue_cagr: 17.8,
       profit_cagr: 18.17,
       avg_roe: 31.92,
       profitable_years: 10,
     }, 10),
-    '10年营收CAGR +17.80% · 归母净利CAGR +18.17% · 平均ROE 31.92% · 盈利10/10年',
+    '市值 250.00亿 · PEG 1.35 · 10年营收CAGR +17.80% · 归母净利CAGR +18.17% · 平均ROE 31.92% · 盈利10/10年',
   )
 })

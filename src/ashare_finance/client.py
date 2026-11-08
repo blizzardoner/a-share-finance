@@ -99,7 +99,7 @@ class EastmoneyClient:
             "invt": 2,
             "fid": "f12",
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-            "fields": "f2,f3,f12,f13,f14,f20,f21,f100",
+            "fields": "f2,f3,f9,f12,f13,f14,f20,f21,f100",
         }
         first = self._request(self.STOCK_URLS[0], params)
         data = first.get("data") or {}
@@ -130,7 +130,7 @@ class EastmoneyClient:
         for start in range(0, len(secids), 100):
             payload = self._request(self.SELECTED_STOCK_URL, {
                 "secids": ",".join(secids[start:start + 100]),
-                "fields": "f2,f3,f12,f13,f14,f20,f21,f100",
+                "fields": "f2,f3,f9,f12,f13,f14,f20,f21,f100",
                 "fltt": 2,
                 "invt": 2,
             })

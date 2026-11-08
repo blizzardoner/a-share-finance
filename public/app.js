@@ -87,6 +87,22 @@ function rankingPercent(value, signed = false) {
   return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
 }
 
+function rankingFilterNumber(id, scale = 1) {
+  const raw = $(id).value.trim()
+  if (!raw) return null
+  const value = Number(raw)
+  return Number.isFinite(value) ? value * scale : null
+}
+
+function rankingFilterOptions() {
+  return {
+    minMarketCap: rankingFilterNumber('ranking-cap-min', 1e8),
+    maxMarketCap: rankingFilterNumber('ranking-cap-max', 1e8),
+    minPeg: rankingFilterNumber('ranking-peg-min'),
+    maxPeg: rankingFilterNumber('ranking-peg-max'),
+  }
+}
+
 function rankingRow(row) {
   const dividend = state.ranking.kind === 'dividend'
   const value = dividend ? rankingPercent(row.yield) : Number(row.score).toFixed(1)
@@ -98,7 +114,7 @@ function rankingRow(row) {
 function renderRanking() {
   if (state.ranking.loading) return
   $('ranking-description').textContent = rankingDescription()
-  const filtered = filterRankingRows(state.ranking.rows, $('ranking-search').value)
+  const filtered = filterRankingRows(state.ranking.rows, $('ranking-search').value, rankingFilterOptions())
   const visible = filtered.slice(0, state.ranking.visible)
   const endYear = state.ranking.meta?.end_year || '—'
   $('ranking-status').textContent = `统计截至${endYear}财年 · ${filtered.length.toLocaleString()}家公司符合完整数据要求`
@@ -233,7 +249,13 @@ $('ranking-close').addEventListener('click', () => {
 })
 $('ranking-types').addEventListener('click', event => { const button = event.target.closest('[data-ranking-kind]'); if (!button) return; state.ranking.kind = button.dataset.rankingKind; loadRanking() })
 $('ranking-years').addEventListener('click', event => { const button = event.target.closest('[data-ranking-years]'); if (!button) return; state.ranking.years = Number(button.dataset.rankingYears); loadRanking() })
-$('ranking-search').addEventListener('input', () => { state.ranking.visible = 100; renderRanking() })
+const rankingFilterIds = ['ranking-search', 'ranking-cap-min', 'ranking-cap-max', 'ranking-peg-min', 'ranking-peg-max']
+rankingFilterIds.forEach(id => $(id).addEventListener('input', () => { state.ranking.visible = 100; renderRanking() }))
+$('ranking-filter-reset').addEventListener('click', () => {
+  rankingFilterIds.forEach(id => { $(id).value = '' })
+  state.ranking.visible = 100
+  renderRanking()
+})
 $('ranking-list').addEventListener('click', event => { const button = event.target.closest('[data-ranking-code]'); if (button) selectCompany(button.dataset.rankingCode) })
 $('ranking-more').addEventListener('click', () => { state.ranking.visible += 100; renderRanking() })
 if ('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register(`${basePath}sw.js`).catch(()=>{}))

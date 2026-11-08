@@ -45,6 +45,7 @@ def normalize_stock(row: dict[str, Any]) -> dict[str, Any]:
         "industry": row.get("EM2016") or row.get("f100") or None,
         "price": _num(row.get("f2")),
         "change_pct": _num(row.get("f3")),
+        "pe_ratio": _num(row.get("f9")),
         "market_cap": _num(row.get("f20")),
         "float_market_cap": _num(row.get("f21")),
     }
@@ -164,6 +165,31 @@ def filter_recent_companies(
     return [stock for stock in stocks if stock.get("code") in recent_codes]
 
 
+def add_stock_valuation_metrics(
+    stocks: Iterable[dict[str, Any]],
+    financials: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for row in financials:
+        code = str(row.get("code") or "")
+        period = str(row.get("period") or "")
+        if not code or not period:
+            continue
+        current = latest.get(code)
+        if current is None or (period, row.get("notice_date") or "") > (
+            current.get("period") or "",
+            current.get("notice_date") or "",
+        ):
+            latest[code] = row
+    enriched: list[dict[str, Any]] = []
+    for stock in stocks:
+        growth = _num(latest.get(str(stock.get("code")), {}).get("net_profit_yoy"))
+        pe_ratio = _num(stock.get("pe_ratio"))
+        peg = pe_ratio / growth if _positive_finite(pe_ratio) and _positive_finite(growth) else None
+        enriched.append({**stock, "peg": peg, "peg_growth_yoy": growth})
+    return enriched
+
+
 def merge_stock_quotes(
     stocks: Iterable[dict[str, Any]],
     quotes: Iterable[dict[str, Any]],
@@ -187,7 +213,7 @@ def merge_stock_quotes(
         raise RuntimeError(f"行情代码缺少公司目录 {preview}{suffix}")
     if len(overlap_codes) / len(quote_codes) < 0.9:
         raise RuntimeError(f"行情与公司目录重合不足 {len(overlap_codes)}/{len(quote_codes)}")
-    market_fields = ("price", "change_pct", "market_cap", "float_market_cap")
+    market_fields = ("price", "change_pct", "pe_ratio", "market_cap", "float_market_cap")
     merged = [
         {
             **stock,

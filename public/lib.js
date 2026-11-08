@@ -50,10 +50,25 @@ export function joinRankingRows(rows, stocks) {
   })
 }
 
-export function filterRankingRows(rows, query) {
+export function filterRankingRows(rows, query, {
+  minMarketCap = null,
+  maxMarketCap = null,
+  minPeg = null,
+  maxPeg = null,
+} = {}) {
   const needle = String(query || '').trim().toLowerCase()
-  if (!needle) return rows
-  return rows.filter(row => `${row.code} ${row.name} ${row.industry || ''} ${row.pinyin || ''}`.toLowerCase().includes(needle))
+  const inRange = (value, min, max) => {
+    const active = min !== null || max !== null
+    if (!active) return true
+    const number = Number(value)
+    if (value === null || value === undefined || !Number.isFinite(number)) return false
+    return (min === null || number >= min) && (max === null || number <= max)
+  }
+  return rows.filter(row => (
+    (!needle || `${row.code} ${row.name} ${row.industry || ''} ${row.pinyin || ''}`.toLowerCase().includes(needle))
+    && inRange(row.market_cap, minMarketCap, maxMarketCap)
+    && inRange(row.peg, minPeg, maxPeg)
+  ))
 }
 
 export function rankRankingRows(rows, kind) {
@@ -69,16 +84,17 @@ export function rankRankingRows(rows, kind) {
 }
 
 export function rankingMetricText(kind, row, years) {
+  const valuation = `市值 ${formatMoney(row.market_cap)} · PEG ${row.peg == null ? '—' : Number(row.peg).toFixed(2)}`
   if (kind === 'dividend') {
     const price = row.price == null ? '—' : `¥${Number(row.price).toFixed(2)}`
-    return `${years}年中${row.dividend_years}年现金分红 · 当前价 ${price}`
+    return `${valuation} · ${years}年中${row.dividend_years}年现金分红 · 当前价 ${price}`
   }
   const percent = (value, signed = false) => {
     if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
     const number = Number(value)
     return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
   }
-  return `${years}年营收CAGR ${percent(row.revenue_cagr, true)} · 归母净利CAGR ${percent(row.profit_cagr, true)} · 平均ROE ${percent(row.avg_roe)} · 盈利${row.profitable_years}/${years}年`
+  return `${valuation} · ${years}年营收CAGR ${percent(row.revenue_cagr, true)} · 归母净利CAGR ${percent(row.profit_cagr, true)} · 平均ROE ${percent(row.avg_roe)} · 盈利${row.profitable_years}/${years}年`
 }
 
 export function searchStocks(stocks, query, limit = 30) {

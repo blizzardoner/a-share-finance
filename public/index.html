@@ -50,6 +50,12 @@
           <button data-ranking-years="10" type="button">10年</button>
         </div>
         <label class="ranking-search" for="ranking-search"><span>⌕</span><input id="ranking-search" type="search" placeholder="在排名中搜索公司、代码或行业" autocomplete="off"></label>
+        <div class="ranking-ranges">
+          <fieldset class="ranking-range"><legend>总市值（亿元）</legend><input id="ranking-cap-min" type="number" min="0" step="10" inputmode="decimal" placeholder="最低"><span>至</span><input id="ranking-cap-max" type="number" min="0" step="10" inputmode="decimal" placeholder="最高"></fieldset>
+          <fieldset class="ranking-range"><legend>PEG</legend><input id="ranking-peg-min" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最低"><span>至</span><input id="ranking-peg-max" type="number" min="0" step="0.1" inputmode="decimal" placeholder="最高"></fieldset>
+          <button class="ranking-reset" id="ranking-filter-reset" type="button">重置筛选</button>
+        </div>
+        <p class="ranking-filter-note">PEG = 当前动态市盈率 ÷ 最新一期归母净利润同比增速；仅正PE、正增长公司有PEG。</p>
       </div>
       <div class="ranking-status" id="ranking-status"></div>
       <div class="ranking-list" id="ranking-list"></div>
