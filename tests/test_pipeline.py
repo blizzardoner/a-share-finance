@@ -104,13 +104,40 @@ class DatasetTests(unittest.TestCase):
         self.assertEqual(merged[0]["price"], 1500.5)
         self.assertEqual(merged[0]["market_cap"], 1_800_000_000_000)
 
-    def test_require_market_caps_rejects_current_stocks_missing_usable_quotes(self):
+    def test_merge_stock_quotes_excludes_directory_rows_outside_current_quote_universe(self):
         stocks = [
-            {"code": "000001", "market_cap": 100},
-            {"code": "600519", "market_cap": None},
+            {"code": "000001", "name": "平安银行", "listing_date": "1991-04-03"},
+            {"code": "000003", "name": "PT金田A", "listing_date": "1991-07-03"},
         ]
-        with self.assertRaisesRegex(RuntimeError, "市值缺失 600519"):
-            require_market_caps(stocks)
+        quotes = [{"code": "000001", "price": 10.5, "market_cap": 200_000_000_000}]
+
+        merged = merge_stock_quotes(stocks, quotes)
+
+        self.assertEqual([stock["code"] for stock in merged], ["000001"])
+
+    def test_merge_stock_quotes_rejects_current_quotes_missing_directory_identity(self):
+        stocks = [{"code": "000001", "name": "平安银行"}]
+        quotes = [{"code": "600519", "price": 1500, "market_cap": 1_800_000_000_000}]
+
+        with self.assertRaisesRegex(RuntimeError, "行情代码缺少公司目录 600519"):
+            merge_stock_quotes(stocks, quotes)
+
+        with self.assertRaisesRegex(RuntimeError, "当前行情目录为空"):
+            merge_stock_quotes(stocks, [])
+
+        with self.assertRaisesRegex(RuntimeError, "公司目录为空"):
+            merge_stock_quotes([], [])
+
+    def test_require_market_caps_rejects_current_stocks_missing_usable_quotes(self):
+        invalid_values = (None, 0, -1, float("nan"), float("inf"))
+        for value in invalid_values:
+            with self.subTest(value=value):
+                stocks = [
+                    {"code": "000001", "market_cap": 100},
+                    {"code": "600519", "market_cap": value},
+                ]
+                with self.assertRaisesRegex(RuntimeError, "市值缺失 600519"):
+                    require_market_caps(stocks)
 
     def test_dividend_rankings_average_implemented_cash_over_full_year_window(self):
         stocks = [
