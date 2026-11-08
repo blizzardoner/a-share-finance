@@ -46,7 +46,7 @@ export function joinRankingRows(rows, stocks) {
   const byCode = new Map(stocks.map(stock => [stock.code, stock]))
   return rows.flatMap(row => {
     const stock = byCode.get(row.code)
-    return stock ? [{ ...row, ...stock }] : []
+    return stock ? [{ ...stock, ...row }] : []
   })
 }
 
@@ -72,19 +72,31 @@ export function filterRankingRows(rows, query, {
 }
 
 export function rankRankingRows(rows, kind) {
-  const metric = kind === 'dividend' ? 'yield' : 'score'
+  const metric = kind === 'dividend' ? 'yield' : kind === 'peg' ? 'peg' : 'score'
   let prior = null
   let rank = 0
   return rows.map((row, index) => {
-    const value = Number(row[metric])
-    if (index === 0 || value !== prior) rank = index + 1
+    const raw = row[metric]
+    const value = Number(raw)
+    if (raw === null || raw === undefined || !Number.isFinite(value)) return { ...row, rank: null }
+    if (prior === null || value !== prior) rank = index + 1
     prior = value
     return { ...row, rank }
   })
 }
 
 export function rankingMetricText(kind, row, years) {
-  const valuation = `市值 ${formatMoney(row.market_cap)} · PEG ${row.peg == null ? '—' : Number(row.peg).toFixed(2)}`
+  const valuation = `市值 ${formatMoney(row.market_cap)}`
+  if (kind === 'peg') {
+    const marketCap = `市值 ${formatMoney(row.market_cap)}`
+    const growthLabel = years === 1 ? '1年归母净利增长率' : `${years}年归母净利CAGR`
+    const pe = row.pe_ratio == null ? '—' : Number(row.pe_ratio).toFixed(2)
+    const growth = row.profit_growth_pct == null ? '—' : `${Number(row.profit_growth_pct).toFixed(2)}%`
+    const result = row.peg == null
+      ? `PEG不可计算（${row.invalid_reason || '数据不足'}）`
+      : `PEG ${Number(row.peg).toFixed(2)}`
+    return `${marketCap} · 动态PE ${pe} ÷ ${growthLabel} ${growth} = ${result} · 归母净利润：${row.start_year}年 ${formatMoney(row.start_profit)} → ${row.end_year}年 ${formatMoney(row.end_profit)}`
+  }
   if (kind === 'dividend') {
     const price = row.price == null ? '—' : `¥${Number(row.price).toFixed(2)}`
     return `${valuation} · ${years}年中${row.dividend_years}年现金分红 · 当前价 ${price}`
@@ -95,6 +107,19 @@ export function rankingMetricText(kind, row, years) {
     return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)}%`
   }
   return `${valuation} · ${years}年营收CAGR ${percent(row.revenue_cagr, true)} · 归母净利CAGR ${percent(row.profit_cagr, true)} · 平均ROE ${percent(row.avg_roe)} · 盈利${row.profitable_years}/${years}年`
+}
+
+export function rankingValueText(kind, row) {
+  if (kind === 'peg') {
+    return row.peg == null
+      ? { value: '—', label: '不可计算' }
+      : { value: Number(row.peg).toFixed(2), label: 'PEG' }
+  }
+  if (kind === 'dividend') {
+    const value = row.yield == null ? '—' : `${Number(row.yield).toFixed(2)}%`
+    return { value, label: '平均分红率' }
+  }
+  return { value: Number(row.score).toFixed(1), label: '综合得分' }
 }
 
 export function searchStocks(stocks, query, limit = 30) {

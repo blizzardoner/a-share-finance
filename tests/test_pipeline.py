@@ -3,11 +3,13 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
+from ashare_finance.cli import run_pipeline
 from ashare_finance.pipeline import (
-    add_stock_valuation_metrics,
     build_company_documents,
     build_dividend_rankings,
+    build_peg_rankings,
     build_performance_rankings,
     dividend_ranking_end_year,
     dedupe_financials,
@@ -80,25 +82,113 @@ class NormalizationTests(unittest.TestCase):
 
 
 class DatasetTests(unittest.TestCase):
-    def test_add_stock_valuation_metrics_uses_latest_positive_profit_growth_for_peg(self):
+    @patch("ashare_finance.cli.EastmoneyClient")
+    def test_pipeline_writes_period_specific_peg_ranking_files(self, client_class):
+        end_year = ranking_end_year(date.today())
+        client = client_class.return_value
+        client.SECURITIES_URL = "securities"
+        client.DATACENTER_URL = "datacenter"
+        client.fetch_org_directory.return_value = [{
+            "SECURITY_CODE": "000001", "SECUCODE": "000001.SZ",
+            "SECURITY_NAME_ABBR": "示例公司", "SECURITY_TYPE": "深交所主板A股",
+            "LISTING_DATE": "2000-01-01",
+        }]
+        client.fetch_selected_stock_quotes.return_value = [{
+            "f12": "000001", "f14": "示例公司", "f13": 0,
+            "f2": 10, "f9": 20, "f20": 100_000_000_000,
+        }]
+        annuals = [
+            {
+                "SECURITY_CODE": "000001", "SECUCODE": "000001.SZ",
+                "REPORT_DATE": f"{year}-12-31", "REPORT_TYPE": "年报",
+                "NOTICE_DATE": f"{year + 1}-03-31", "PARENTNETPROFIT": 100 + (year - (end_year - 10)) * 10,
+            }
+            for year in range(end_year - 10, end_year + 1)
+        ]
+        client.fetch_pages.side_effect = lambda url, *_args, **_kwargs: annuals if url == "securities" else []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_pipeline(Path(tmp), since=f"{end_year - 10}-01-01", codes={"000001"}, min_interval=0)
+
+            for years in (1, 3, 5, 10):
+                payload = json.loads((Path(tmp) / "rankings" / f"peg-{years}.json").read_text(encoding="utf-8"))
+                self.assertEqual(payload["meta"]["kind"], "peg")
+                self.assertEqual(payload["meta"]["years"], years)
+                self.assertEqual(payload["meta"]["end_year"], end_year)
+                self.assertEqual(payload["rows"][0]["code"], "000001")
+
+    def test_peg_rankings_use_period_profit_growth_and_sort_low_to_high(self):
         stocks = [
-            {"code": "000001", "pe_ratio": 20},
-            {"code": "000002", "pe_ratio": 15},
-            {"code": "000003", "pe_ratio": -10},
+            {"code": "000001", "listing_date": "2000-01-01", "pe_ratio": 20},
+            {"code": "000002", "listing_date": "2000-01-01", "pe_ratio": 12},
         ]
-        financials = [
-            {"code": "000001", "period": "2025-12-31", "net_profit_yoy": 10},
-            {"code": "000001", "period": "2026-09-30", "net_profit_yoy": 25},
-            {"code": "000002", "period": "2026-09-30", "net_profit_yoy": -5},
-            {"code": "000003", "period": "2026-09-30", "net_profit_yoy": 20},
+        annuals = []
+        for year, profit in [(2022, 10), (2023, 12), (2024, 15), (2025, 20)]:
+            annuals.append({"code": "000001", "period": f"{year}-12-31", "net_profit": profit})
+        for year, profit in [(2022, 10), (2023, 11), (2024, 12), (2025, 15)]:
+            annuals.append({"code": "000002", "period": f"{year}-12-31", "net_profit": profit})
+
+        rankings = build_peg_rankings(stocks, annuals, end_year=2025, periods=(1, 3))
+
+        self.assertEqual([row["code"] for row in rankings[1]], ["000002", "000001"])
+        self.assertEqual([row["code"] for row in rankings[3]], ["000001", "000002"])
+        one_year = next(row for row in rankings[1] if row["code"] == "000001")
+        three_year = next(row for row in rankings[3] if row["code"] == "000001")
+        self.assertAlmostEqual(one_year["profit_growth_pct"], (20 / 15 - 1) * 100)
+        self.assertAlmostEqual(one_year["peg"], 20 / ((20 / 15 - 1) * 100))
+        self.assertAlmostEqual(three_year["profit_growth_pct"], ((20 / 10) ** (1 / 3) - 1) * 100)
+        self.assertEqual((three_year["start_year"], three_year["end_year"]), (2022, 2025))
+        self.assertEqual((three_year["start_profit"], three_year["end_profit"]), (10, 20))
+
+    def test_peg_rankings_append_unavailable_rows_with_explicit_reasons(self):
+        stocks = [
+            {"code": "000001", "listing_date": "2000-01-01", "pe_ratio": 10},
+            {"code": "000002", "listing_date": "2000-01-01", "pe_ratio": None},
+            {"code": "000003", "listing_date": "2000-01-01", "pe_ratio": -5},
+            {"code": "000004", "listing_date": "2024-06-01", "pe_ratio": 10},
+            {"code": "000005", "listing_date": "2000-01-01", "pe_ratio": 10},
+            {"code": "000006", "listing_date": "2000-01-01", "pe_ratio": 10},
+            {"code": "000007", "listing_date": "2000-01-01", "pe_ratio": 10},
         ]
+        annuals = []
+        for code in ("000001", "000002", "000003", "000004", "000006", "000007"):
+            profits = {2022: 10, 2023: 12, 2024: 15, 2025: 20}
+            if code == "000006":
+                profits[2024] = -1
+            if code == "000007":
+                profits[2025] = 8
+            for year, profit in profits.items():
+                annuals.append({"code": code, "period": f"{year}-12-31", "net_profit": profit})
 
-        enriched = add_stock_valuation_metrics(stocks, financials)
+        rows = build_peg_rankings(stocks, annuals, end_year=2025, periods=(3,))[3]
 
-        self.assertAlmostEqual(enriched[0]["peg"], 0.8)
-        self.assertEqual(enriched[0]["peg_growth_yoy"], 25)
-        self.assertIsNone(enriched[1]["peg"])
-        self.assertIsNone(enriched[2]["peg"])
+        self.assertEqual(rows[0]["code"], "000001")
+        self.assertIsNotNone(rows[0]["peg"])
+        reasons = {row["code"]: row["invalid_reason"] for row in rows[1:]}
+        self.assertEqual(reasons, {
+            "000002": "动态市盈率缺失",
+            "000003": "动态市盈率非正",
+            "000004": "上市时间不足3年",
+            "000005": "缺少2022年年报",
+            "000006": "2024年归母净利润非正",
+            "000007": "归母净利润3年CAGR非正",
+        })
+        self.assertTrue(all(row["peg"] is None for row in rows[1:]))
+        missing_pe = next(row for row in rows if row["code"] == "000002")
+        self.assertAlmostEqual(missing_pe["profit_growth_pct"], ((20 / 10) ** (1 / 3) - 1) * 100)
+
+    def test_one_year_peg_uses_growth_rate_language(self):
+        rows = build_peg_rankings(
+            [{"code": "000001", "listing_date": "2000-01-01", "pe_ratio": 10}],
+            [
+                {"code": "000001", "period": "2024-12-31", "net_profit": 10},
+                {"code": "000001", "period": "2025-12-31", "net_profit": 8},
+            ],
+            end_year=2025,
+            periods=(1,),
+        )[1]
+
+        self.assertEqual(rows[0]["invalid_reason"], "归母净利润1年增长率非正")
 
     def test_ranking_end_year_waits_for_annual_report_deadline(self):
         self.assertEqual(ranking_end_year(date(2026, 4, 30)), 2024)

@@ -7,6 +7,7 @@ import {
   formatMoney,
   joinRankingRows,
   rankingMetricText,
+  rankingValueText,
   rankRankingRows,
   rankingUrl,
   searchStocks,
@@ -87,6 +88,16 @@ test('ranking rows join stock identity and filter locally without extra data', (
   )
 })
 
+test('period-specific ranking values override stock-index valuation fields', () => {
+  const rows = joinRankingRows(
+    [{ code: '000001', peg: 0.5, profit_growth_pct: 40 }],
+    [{ code: '000001', name: '平安银行', peg: 1.8, peg_growth_yoy: 10 }],
+  )
+
+  assert.equal(rows[0].peg, 0.5)
+  assert.equal(rows[0].profit_growth_pct, 40)
+})
+
 test('ranking rows use competition ranks for equal metrics', () => {
   const rows = rankRankingRows([
     { code: '000001', yield: 5, score: 90 },
@@ -95,6 +106,56 @@ test('ranking rows use competition ranks for equal metrics', () => {
   ], 'dividend')
 
   assert.deepEqual(rows.map(row => row.rank), [1, 1, 3])
+})
+
+test('PEG ranking sorts ascending and leaves unavailable rows unranked', () => {
+  const rows = rankRankingRows([
+    { code: '000001', peg: 0.5 },
+    { code: '000002', peg: 0.5 },
+    { code: '000003', peg: 0.8 },
+    { code: '000004', peg: null, invalid_reason: '动态市盈率缺失' },
+  ], 'peg')
+
+  assert.deepEqual(rows.map(row => row.rank), [1, 1, 3, null])
+})
+
+test('PEG metric text shows every formula component and profit endpoints', () => {
+  assert.equal(
+    rankingMetricText('peg', {
+      market_cap: 250e8,
+      pe_ratio: 20,
+      profit_growth_pct: 25.99,
+      peg: 0.77,
+      start_year: 2022,
+      end_year: 2025,
+      start_profit: 100e8,
+      end_profit: 200e8,
+      invalid_reason: null,
+    }, 3),
+    '市值 250.00亿 · 动态PE 20.00 ÷ 3年归母净利CAGR 25.99% = PEG 0.77 · 归母净利润：2022年 100.00亿 → 2025年 200.00亿',
+  )
+})
+
+test('unavailable PEG text keeps available formula components and reason', () => {
+  assert.equal(
+    rankingMetricText('peg', {
+      market_cap: 250e8,
+      pe_ratio: null,
+      profit_growth_pct: 25.99,
+      peg: null,
+      start_year: 2022,
+      end_year: 2025,
+      start_profit: 100e8,
+      end_profit: 200e8,
+      invalid_reason: '动态市盈率缺失',
+    }, 3),
+    '市值 250.00亿 · 动态PE — ÷ 3年归母净利CAGR 25.99% = PEG不可计算（动态市盈率缺失） · 归母净利润：2022年 100.00亿 → 2025年 200.00亿',
+  )
+})
+
+test('PEG value display distinguishes calculable and unavailable rows', () => {
+  assert.deepEqual(rankingValueText('peg', { peg: 0.77 }), { value: '0.77', label: 'PEG' })
+  assert.deepEqual(rankingValueText('peg', { peg: null }), { value: '—', label: '不可计算' })
 })
 
 test('performance metric text explains the selected period and all score inputs', () => {
@@ -107,6 +168,6 @@ test('performance metric text explains the selected period and all score inputs'
       avg_roe: 31.92,
       profitable_years: 10,
     }, 10),
-    '市值 250.00亿 · PEG 1.35 · 10年营收CAGR +17.80% · 归母净利CAGR +18.17% · 平均ROE 31.92% · 盈利10/10年',
+    '市值 250.00亿 · 10年营收CAGR +17.80% · 归母净利CAGR +18.17% · 平均ROE 31.92% · 盈利10/10年',
   )
 })
