@@ -167,6 +167,49 @@ class FundRankingClientTests(unittest.TestCase):
             client.fetch_size_rankings(fund_types=("25",), page_size=1)
         self.assertEqual(client.calls, 2)
 
+    def test_fetch_size_rankings_extends_when_total_grows_mid_scan(self):
+        class GrowingTotalClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.pages = []
+
+            def _get(self, _url, params=None, referer=None):
+                page = int(params["pageIndex"])
+                self.pages.append(page)
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 2 if page == 1 else 3,
+                    "Datas": [{"FCODE": f"00000{page}", "SHORTNAME": f"基金{page}", "ENDNAV": "100000000"}],
+                })
+
+        client = GrowingTotalClient()
+        rows = client.fetch_size_rankings(fund_types=("25",), page_size=1)
+
+        self.assertEqual(client.pages, [1, 2, 3])
+        self.assertEqual([row["code"] for row in rows], ["000001", "000002", "000003"])
+
+    def test_fetch_size_rankings_bounds_continuously_growing_totals(self):
+        class EverGrowingClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.pages = []
+
+            def _get(self, _url, params=None, referer=None):
+                page = int(params["pageIndex"])
+                self.pages.append(page)
+                if page > 20:
+                    raise RuntimeError("test request cap exceeded")
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": page + 1,
+                    "Datas": [{"FCODE": f"{page:06d}", "SHORTNAME": f"基金{page}", "ENDNAV": "100000000"}],
+                })
+
+        client = EverGrowingClient()
+        with self.assertRaisesRegex(RuntimeError, "覆盖不完整"):
+            client.fetch_size_rankings(fund_types=("25",), page_size=1)
+        self.assertEqual(len(client.pages), 12)
+
     def test_parse_fund_catalog_keeps_code_name_and_type(self):
         rows = parse_fund_catalog('var r = [["000001","HXCZHH","华夏成长混合","混合型-灵活","HUAXIACHENGZHANG"]];')
         self.assertEqual(rows, [{
