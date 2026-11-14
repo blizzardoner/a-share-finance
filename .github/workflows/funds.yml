@@ -103,7 +103,9 @@ jobs:
             cp -a .cache/fund-state public/data/funds
           fi
           if [ ! -f public/data/stocks.json ]; then
-            ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30 --skip-funds
+            if ! ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30 --skip-funds; then
+              python -m ashare_finance.restore_live --url https://blizzardoner.github.io/a-share-finance/data --output public/data --workers 24
+            fi
             python -c "import json; from pathlib import Path; from ashare_finance.fund_rotation import ensure_empty_fund_state; root=Path('public/data'); generated=json.loads((root/'meta.json').read_text(encoding='utf-8'))['generated_at']; ensure_empty_fund_state(root, generated)"
           fi
           test -f public/data/stocks.json

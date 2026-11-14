@@ -92,7 +92,17 @@ jobs:
           fi
 
       - name: Fetch current A-share finance and dividend data
+        id: refresh-market-data
+        continue-on-error: true
         run: ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30 --skip-funds
+
+      - name: Restore the currently deployed data when Eastmoney blocks the runner
+        if: steps.refresh-market-data.outcome == 'failure'
+        run: >-
+          python -m ashare_finance.restore_live
+          --url https://blizzardoner.github.io/a-share-finance/data
+          --output public/data
+          --workers 24
 
       - name: Bootstrap an empty fund state when no prior state exists
         run: >-
