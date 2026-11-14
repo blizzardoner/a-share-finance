@@ -310,11 +310,12 @@ class FundClient:
         page_size: int,
         page: int,
         filters: dict[str, str],
+        sort: str = "desc",
     ) -> tuple[list[dict[str, Any]], int]:
         params = {
             "FundType": fund_type,
             "SortColumn": "ENDNAV",
-            "Sort": "desc",
+            "Sort": sort,
             "pageIndex": page,
             "pageSize": page_size,
             "BUY": "true",
@@ -349,6 +350,7 @@ class FundClient:
         total = 0
         max_pages = 1
         page_cap = 1
+        hit_empty_page = False
         label = f"{fund_type}/" + "/".join(f"{key}-{value}" for key, value in sorted(filters.items()))
         while page == 1 or len(category) < total:
             rows, current_total = self._request_size_rank_page(fund_type, page_size, page, filters)
@@ -360,6 +362,7 @@ class FundClient:
                 total = current_total
                 max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
             if not rows:
+                hit_empty_page = True
                 break
             previous_count = len(category)
             for row in rows:
@@ -372,6 +375,30 @@ class FundClient:
             if page >= max_pages:
                 break
             page += 1
+        if len(category) < total and hit_empty_page:
+            ascending_page = 1
+            while len(category) < total and ascending_page <= max_pages:
+                rows, current_total = self._request_size_rank_page(
+                    fund_type,
+                    page_size,
+                    ascending_page,
+                    filters,
+                    sort="asc",
+                )
+                if current_total > total:
+                    total = current_total
+                    max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
+                if not rows:
+                    break
+                previous_count = len(category)
+                for row in rows:
+                    code = str(row.get("code") or "")
+                    if code:
+                        category[code] = row
+                if len(category) == previous_count:
+                    break
+                self.progress(f"基金规模 {label}/asc: {ascending_page} · {len(category)}/{total}")
+                ascending_page += 1
         if len(category) != total:
             raise RuntimeError(f"基金规模排名覆盖不完整 {label}: {len(category)}/{total}")
         return category

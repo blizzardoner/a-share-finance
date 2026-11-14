@@ -213,6 +213,35 @@ class FundRankingClientTests(unittest.TestCase):
             client._fetch_size_rank_partition("25", 1, {})
         self.assertEqual(len(client.pages), 12)
 
+    def test_fetch_size_rank_partition_recovers_capped_tail_in_ascending_order(self):
+        class CappedClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.calls = []
+
+            def _get(self, _url, params=None, referer=None):
+                direction = str(params["Sort"])
+                page = int(params["pageIndex"])
+                self.calls.append((direction, page))
+                if direction == "desc":
+                    codes = {1: ("000001", "000002"), 2: ("000003", "000004")}.get(page, ())
+                else:
+                    codes = {1: ("000005", "000004")}.get(page, ())
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 5,
+                    "Datas": [
+                        {"FCODE": code, "SHORTNAME": f"基金{code}", "ENDNAV": "100000000"}
+                        for code in codes
+                    ],
+                })
+
+        client = CappedClient()
+        rows = client._fetch_size_rank_partition("27", 2, {"ESTABDATE": "6", "RISKLEVEL": "4"})
+
+        self.assertEqual(sorted(rows), ["000001", "000002", "000003", "000004", "000005"])
+        self.assertEqual(client.calls, [("desc", 1), ("desc", 2), ("desc", 3), ("asc", 1)])
+
     def test_size_rank_partitions_split_the_oldest_mixed_funds_by_risk(self):
         stock_partitions = FundClient._size_rank_partitions("25")
         mixed_partitions = FundClient._size_rank_partitions("27")
