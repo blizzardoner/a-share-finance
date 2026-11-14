@@ -96,6 +96,8 @@ jobs:
             fund-state-${{ runner.os }}-
 
       - name: Restore durable fund state and ensure market context
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ ! -f public/data/funds/meta.json ] && [ -f .cache/fund-state/meta.json ]; then
             mkdir -p public/data
@@ -104,7 +106,14 @@ jobs:
           fi
           if [ ! -f public/data/stocks.json ]; then
             if ! ashare-finance --output public/data --since 2021-01-01 --min-interval 0.30 --skip-funds; then
-              python -m ashare_finance.restore_live --url https://blizzardoner.github.io/a-share-finance/data --output public/data --workers 24
+              mkdir -p .snapshot
+              if gh release download data-snapshot-2026-11-12 --pattern 'a-share-data-snapshot-*.tar.gz' --dir .snapshot \
+                && python -m ashare_finance.restore_live --archive .snapshot/a-share-data-snapshot-2026-11-12.tar.gz \
+                  --sha256 0ef1ed9f22d50f7aa9972fa555098d50afa23e366aa4cbd791bc4f1fc130062a --output public/data; then
+                echo "Restored verified release snapshot"
+              else
+                python -m ashare_finance.restore_live --url https://blizzardoner.github.io/a-share-finance/data --output public/data --workers 2
+              fi
             fi
             python -c "import json; from pathlib import Path; from ashare_finance.fund_rotation import ensure_empty_fund_state; root=Path('public/data'); generated=json.loads((root/'meta.json').read_text(encoding='utf-8'))['generated_at']; ensure_empty_fund_state(root, generated)"
           fi

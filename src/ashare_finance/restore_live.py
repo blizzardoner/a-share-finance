@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import shutil
 import time
+import tarfile
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 
@@ -60,6 +62,69 @@ def _json_bytes(payload: bytes, path: str) -> dict:
     return value
 
 
+def derive_fund_event_shards(data_root: Path) -> int:
+    fund_dir = data_root / "funds"
+    fund_meta = json.loads((fund_dir / "meta.json").read_text(encoding="utf-8"))
+    fund_events = json.loads((fund_dir / "events.json").read_text(encoding="utf-8")).get("events") or []
+    stock_dir = fund_dir / "stocks"
+    if stock_dir.exists():
+        shutil.rmtree(stock_dir)
+    events_by_stock: dict[str, list[dict]] = {}
+    for event in fund_events:
+        if not isinstance(event, dict) or event.get("event_type") in {"CENSORED", "UNCHANGED"}:
+            continue
+        code = str(event.get("stock_code") or "")
+        if len(code) == 6 and code.isdigit():
+            events_by_stock.setdefault(code, []).append(event)
+    for code, events in events_by_stock.items():
+        destination = stock_dir / code[:2] / f"{code}.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps({"meta": fund_meta, "events": events}, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    return len(events_by_stock)
+
+
+def restore_snapshot_archive(archive: Path, output: Path, expected_sha256: str) -> dict[str, int]:
+    digest = hashlib.sha256()
+    with archive.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest().lower() != expected_sha256.lower():
+        raise ValueError("数据快照SHA-256校验失败")
+
+    staging = output.parent / f".{output.name}-snapshot-restore"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            members = bundle.getmembers()
+            for member in members:
+                path = PurePosixPath(member.name.replace("\\", "/"))
+                if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "data":
+                    raise ValueError(f"数据快照包含不安全路径: {member.name}")
+                if not (member.isfile() or member.isdir()):
+                    raise ValueError(f"数据快照包含不安全文件类型: {member.name}")
+            bundle.extractall(staging, members=members)
+
+        restored = staging / "data"
+        for required in ("meta.json", "stocks.json", "funds/meta.json", "funds/events.json"):
+            if not (restored / required).is_file():
+                raise ValueError(f"数据快照缺少文件: {required}")
+        if (output / "funds" / "meta.json").exists():
+            shutil.copytree(output / "funds", restored / "funds", dirs_exist_ok=True)
+        fund_stock_shards = derive_fund_event_shards(restored)
+        if output.exists():
+            shutil.rmtree(output)
+        restored.replace(output)
+        return {"fund_stock_shards": fund_stock_shards}
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
 def restore_live_data(
     base_url: str,
     output: Path,
@@ -100,28 +165,9 @@ def restore_live_data(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payloads[path])
 
-    derived_shards = 0
-    if not preserve_funds:
-        fund_meta = _json_bytes(payloads["funds/meta.json"], "funds/meta.json")
-        fund_events = _json_bytes(payloads["funds/events.json"], "funds/events.json").get("events") or []
-        events_by_stock: dict[str, list[dict]] = {}
-        for event in fund_events:
-            if not isinstance(event, dict) or event.get("event_type") in {"CENSORED", "UNCHANGED"}:
-                continue
-            code = str(event.get("stock_code") or "")
-            if len(code) == 6 and code.isdigit():
-                events_by_stock.setdefault(code, []).append(event)
-        for code, events in events_by_stock.items():
-            destination = staging / "funds" / "stocks" / code[:2] / f"{code}.json"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(
-                json.dumps({"meta": fund_meta, "events": events}, ensure_ascii=False, separators=(",", ":")),
-                encoding="utf-8",
-            )
-            derived_shards += 1
-
     if preserve_funds:
         shutil.copytree(output / "funds", staging / "funds", dirs_exist_ok=True)
+    derived_shards = derive_fund_event_shards(staging)
     if output.exists():
         shutil.rmtree(output)
     staging.replace(output)
@@ -134,11 +180,20 @@ def restore_live_data(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Restore the last deployed static data snapshot")
-    parser.add_argument("--url", required=True)
+    parser.add_argument("--url")
+    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--sha256")
     parser.add_argument("--output", type=Path, default=Path("public/data"))
     parser.add_argument("--workers", type=int, default=24)
     args = parser.parse_args()
-    result = restore_live_data(args.url, args.output, workers=args.workers)
+    if args.archive:
+        if not args.sha256:
+            parser.error("--archive requires --sha256")
+        result = restore_snapshot_archive(args.archive, args.output, args.sha256)
+    else:
+        if not args.url:
+            parser.error("--url or --archive is required")
+        result = restore_live_data(args.url, args.output, workers=args.workers)
     print(json.dumps(result, ensure_ascii=False))
 
 
