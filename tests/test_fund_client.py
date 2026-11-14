@@ -70,6 +70,10 @@ class FundDetailParsingTests(unittest.TestCase):
 
 
 class FundRankingClientTests(unittest.TestCase):
+    def test_mobile_fund_api_uses_a_mobile_browser_user_agent(self):
+        self.assertIn("Android", FundClient.USER_AGENT)
+        self.assertIn("Mobile", FundClient.USER_AGENT)
+
     @staticmethod
     def _rank_payload(code: str, page: int, total: int = 2, pages: int = 2) -> str:
         values = [code, f"基金{code}", "PINYIN", "2026-11-06", "1", "1", "0", "1", "2", "3", "4", "10", "20", "30", "5", "100", "2020-01-01", "", "40", "1.5", "0.15"]

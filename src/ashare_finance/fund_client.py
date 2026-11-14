@@ -212,6 +212,7 @@ def parse_notice_content(payload: str) -> dict[str, str]:
 
 
 class FundClient:
+    USER_AGENT = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
     CATALOG_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
     RANK_URL = "https://fund.eastmoney.com/data/rankhandler.aspx"
     SIZE_RANK_URL = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNRank"
@@ -244,7 +245,7 @@ class FundClient:
         request = urllib.request.Request(
             f"{url}?{query}" if query else url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 AShareFinance/0.1",
+                "User-Agent": self.USER_AGENT,
                 "Referer": referer or "https://fund.eastmoney.com/",
                 "Accept": "application/json,text/plain,*/*",
             },
