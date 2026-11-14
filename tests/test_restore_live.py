@@ -1,9 +1,12 @@
 import json
+import hashlib
+import io
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
-from ashare_finance.restore_live import build_live_data_paths, restore_live_data
+from ashare_finance.restore_live import build_live_data_paths, restore_live_data, restore_snapshot_archive
 
 
 class RestoreLiveDataTests(unittest.TestCase):
@@ -36,6 +39,7 @@ class RestoreLiveDataTests(unittest.TestCase):
             (output / "funds").mkdir(parents=True)
             (output / "funds" / "meta.json").write_text('{"generated_at":"cached-funds"}', encoding="utf-8")
             (output / "funds" / "universe.json").write_text('{"funds":[]}', encoding="utf-8")
+            (output / "funds" / "events.json").write_text('{"events":[]}', encoding="utf-8")
 
             result = restore_live_data("https://example.test/data", output, fetch=fetch, workers=2)
 
@@ -68,3 +72,51 @@ class RestoreLiveDataTests(unittest.TestCase):
 
             shard = json.loads((output / "funds" / "stocks" / "60" / "600519.json").read_text(encoding="utf-8"))
             self.assertEqual([event["event_type"] for event in shard["events"]], ["CONFIRMED_ADD"])
+
+    def test_snapshot_restore_verifies_digest_and_preserves_output_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "snapshot.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                info = tarfile.TarInfo("data/meta.json")
+                payload = b'{"generated_at":"snapshot"}'
+                info.size = len(payload)
+                bundle.addfile(info, io.BytesIO(payload))
+            output = root / "data"
+            output.mkdir()
+            (output / "marker.txt").write_text("keep", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                restore_snapshot_archive(archive, output, "0" * 64)
+
+            self.assertEqual((output / "marker.txt").read_text(encoding="utf-8"), "keep")
+
+    def test_snapshot_restore_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "snapshot.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                info = tarfile.TarInfo("../escape.json")
+                payload = b"{}"
+                info.size = len(payload)
+                bundle.addfile(info, io.BytesIO(payload))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+            with self.assertRaisesRegex(ValueError, "不安全"):
+                restore_snapshot_archive(archive, root / "data", digest)
+            self.assertFalse((root / "escape.json").exists())
+
+    def test_snapshot_restore_rejects_windows_separator_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "snapshot.tar.gz"
+            with tarfile.open(archive, "w:gz") as bundle:
+                info = tarfile.TarInfo(r"data/..\..\escape.json")
+                payload = b"{}"
+                info.size = len(payload)
+                bundle.addfile(info, io.BytesIO(payload))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+            with self.assertRaisesRegex(ValueError, "不安全"):
+                restore_snapshot_archive(archive, root / "data", digest)
+            self.assertFalse((root / "escape.json").exists())

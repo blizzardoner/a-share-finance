@@ -98,11 +98,17 @@ jobs:
 
       - name: Restore the currently deployed data when Eastmoney blocks the runner
         if: steps.refresh-market-data.outcome == 'failure'
-        run: >-
-          python -m ashare_finance.restore_live
-          --url https://blizzardoner.github.io/a-share-finance/data
-          --output public/data
-          --workers 24
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .snapshot
+          if gh release download data-snapshot-2026-11-12 --pattern 'a-share-data-snapshot-*.tar.gz' --dir .snapshot \
+            && python -m ashare_finance.restore_live --archive .snapshot/a-share-data-snapshot-2026-11-12.tar.gz \
+              --sha256 0ef1ed9f22d50f7aa9972fa555098d50afa23e366aa4cbd791bc4f1fc130062a --output public/data; then
+            echo "Restored verified release snapshot"
+          else
+            python -m ashare_finance.restore_live --url https://blizzardoner.github.io/a-share-finance/data --output public/data --workers 2
+          fi
 
       - name: Bootstrap an empty fund state when no prior state exists
         run: >-
