@@ -118,7 +118,10 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = FakeClient()
-        rows = client.fetch_size_rankings(fund_types=("25", "27"), page_size=1, partition_filters=({},))
+        rows_by_code = {}
+        for fund_type in ("25", "27"):
+            rows_by_code.update(client._fetch_size_rank_partition(fund_type, 1, {}))
+        rows = [rows_by_code[code] for code in sorted(rows_by_code)]
 
         self.assertEqual(client.calls, [("25", 1, 1), ("25", 2, 1), ("27", 1, 1), ("27", 2, 1)])
         self.assertEqual(len(set(client.devices)), 4)
@@ -141,10 +144,10 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = BusyOnceClient()
-        rows = client.fetch_size_rankings(fund_types=("25",), page_size=30, partition_filters=({},))
+        rows_by_code = client._fetch_size_rank_partition("25", 30, {})
 
         self.assertEqual(client.calls, 2)
-        self.assertEqual(rows[0]["code"], "000001")
+        self.assertEqual(rows_by_code["000001"]["code"], "000001")
 
     def test_fetch_size_rankings_rejects_repeated_pages_without_progress(self):
         class RepeatingPageClient(FundClient):
@@ -164,7 +167,7 @@ class FundRankingClientTests(unittest.TestCase):
 
         client = RepeatingPageClient()
         with self.assertRaisesRegex(RuntimeError, "基金规模排名分页未前进"):
-            client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
+            client._fetch_size_rank_partition("25", 1, {})
         self.assertEqual(client.calls, 2)
 
     def test_fetch_size_rankings_extends_when_total_grows_mid_scan(self):
@@ -183,10 +186,10 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = GrowingTotalClient()
-        rows = client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
+        rows_by_code = client._fetch_size_rank_partition("25", 1, {})
 
         self.assertEqual(client.pages, [1, 2, 3])
-        self.assertEqual([row["code"] for row in rows], ["000001", "000002", "000003"])
+        self.assertEqual(sorted(rows_by_code), ["000001", "000002", "000003"])
 
     def test_fetch_size_rankings_bounds_continuously_growing_totals(self):
         class EverGrowingClient(FundClient):
@@ -207,7 +210,7 @@ class FundRankingClientTests(unittest.TestCase):
 
         client = EverGrowingClient()
         with self.assertRaisesRegex(RuntimeError, "覆盖不完整"):
-            client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
+            client._fetch_size_rank_partition("25", 1, {})
         self.assertEqual(len(client.pages), 12)
 
     def test_size_rank_partitions_split_the_oldest_mixed_funds_by_risk(self):

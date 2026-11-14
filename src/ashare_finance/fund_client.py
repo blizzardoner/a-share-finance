@@ -389,7 +389,6 @@ class FundClient:
         self,
         fund_types: tuple[str, ...] = ("25", "27"),
         page_size: int = 30,
-        partition_filters: tuple[dict[str, str], ...] | None = None,
     ) -> list[dict[str, Any]]:
         if not 1 <= page_size <= 30:
             raise ValueError("基金规模排名每页数量必须在1到30之间")
@@ -397,13 +396,12 @@ class FundClient:
         for fund_type in fund_types:
             category: dict[str, dict[str, Any]] = {}
             partition_count = 0
-            partitions = partition_filters or self._size_rank_partitions(fund_type)
-            parent_total = self._request_size_rank_page(fund_type, page_size, 1, {})[1] if partition_filters is None else None
-            for filters in partitions:
+            parent_total = self._request_size_rank_page(fund_type, page_size, 1, {})[1]
+            for filters in self._size_rank_partitions(fund_type):
                 partition = self._fetch_size_rank_partition(fund_type, page_size, filters)
                 partition_count += len(partition)
                 category.update(partition)
-            if parent_total is not None and (partition_count != parent_total or len(category) != parent_total):
+            if partition_count != parent_total or len(category) != parent_total:
                 raise RuntimeError(
                     f"基金规模排名分区覆盖不完整 {fund_type}: "
                     f"唯一{len(category)}/分区{partition_count}/总数{parent_total}"
