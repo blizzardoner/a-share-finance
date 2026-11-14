@@ -7,6 +7,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -327,11 +328,13 @@ class FundClient:
                     "product": "EFund",
                     "plat": "Android",
                     "version": "6.4.7",
-                    "deviceid": "ashare-finance",
+                    "deviceid": str(uuid.uuid4()),
                 }
                 last_error: ValueError | None = None
                 for attempt in range(1, self.retries + 1):
                     try:
+                        if attempt > 1:
+                            params["deviceid"] = str(uuid.uuid4())
                         rows, current_total = parse_size_rank_payload(self._get(self.SIZE_RANK_URL, params))
                         break
                     except ValueError as error:

@@ -99,11 +99,13 @@ class FundRankingClientTests(unittest.TestCase):
             def __init__(self):
                 super().__init__(min_interval=0)
                 self.calls = []
+                self.devices = []
 
             def _get(self, _url, params=None, referer=None):
                 fund_type = str(params["FundType"])
                 page = int(params["pageIndex"])
                 self.calls.append((fund_type, page, int(params["pageSize"])))
+                self.devices.append(str(params["deviceid"]))
                 code = f"{fund_type}{page:04d}"
                 return json.dumps({
                     "Success": True,
@@ -115,6 +117,7 @@ class FundRankingClientTests(unittest.TestCase):
         rows = client.fetch_size_rankings(fund_types=("25", "27"), page_size=1)
 
         self.assertEqual(client.calls, [("25", 1, 1), ("25", 2, 1), ("27", 1, 1), ("27", 2, 1)])
+        self.assertEqual(len(set(client.devices)), 4)
         self.assertEqual([row["code"] for row in rows], ["250001", "250002", "270001", "270002"])
 
     def test_fetch_size_rankings_retries_provider_busy_payload(self):
