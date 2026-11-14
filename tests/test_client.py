@@ -42,6 +42,33 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.pages_seen, [1, 2, 3])
         self.assertTrue(all("m:0+t:81+s:2048" in value for value in client.filters_seen))
 
+    def test_fetch_stocks_falls_back_to_another_quote_host_when_one_disconnects(self):
+        class FallbackQuoteClient(EastmoneyClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.calls = []
+
+            def _request(self, url, params):
+                page = int(params["pn"])
+                self.calls.append((page, url))
+                if page == 2 and url == self.STOCK_URLS[1]:
+                    raise ConnectionError("preferred quote host disconnected")
+                return {
+                    "data": {
+                        "total": 200,
+                        "diff": [{"f12": f"{page:02d}{i:04d}"} for i in range(100)],
+                    }
+                }
+
+        client = FallbackQuoteClient()
+        rows = client.fetch_stocks()
+
+        self.assertEqual(len(rows), 200)
+        self.assertEqual(
+            [url for page, url in client.calls if page == 2],
+            [client.STOCK_URLS[1], client.STOCK_URLS[2]],
+        )
+
     def test_fetch_selected_stock_quotes_batches_codes_in_one_request(self):
         class SelectedQuoteClient(EastmoneyClient):
             def __init__(self):
