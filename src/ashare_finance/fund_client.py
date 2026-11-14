@@ -317,6 +317,7 @@ class FundClient:
             category: dict[str, dict[str, Any]] = {}
             total = 0
             max_pages = 1
+            page_cap = 1
             while page == 1 or len(category) < total:
                 params = {
                     "FundType": fund_type,
@@ -348,8 +349,10 @@ class FundClient:
                 if page == 1:
                     total = current_total
                     max_pages = max(1, (total + page_size - 1) // page_size)
-                elif current_total != total:
-                    raise RuntimeError(f"基金规模排名分页元数据变化: {fund_type}")
+                    page_cap = max_pages + 10
+                elif current_total > total:
+                    total = current_total
+                    max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
                 if not rows:
                     break
                 previous_count = len(category)
