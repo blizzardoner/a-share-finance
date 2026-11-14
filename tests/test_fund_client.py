@@ -120,7 +120,8 @@ class FundRankingClientTests(unittest.TestCase):
         client = FakeClient()
         rows_by_code = {}
         for fund_type in ("25", "27"):
-            rows_by_code.update(client._fetch_size_rank_partition(fund_type, 1, {}))
+            partition, _ = client._fetch_size_rank_partition(fund_type, 1, {})
+            rows_by_code.update(partition)
         rows = [rows_by_code[code] for code in sorted(rows_by_code)]
 
         self.assertEqual(client.calls, [("25", 1, 1), ("25", 2, 1), ("27", 1, 1), ("27", 2, 1)])
@@ -144,7 +145,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = BusyOnceClient()
-        rows_by_code = client._fetch_size_rank_partition("25", 30, {})
+        rows_by_code, _ = client._fetch_size_rank_partition("25", 30, {})
 
         self.assertEqual(client.calls, 2)
         self.assertEqual(rows_by_code["000001"]["code"], "000001")
@@ -186,7 +187,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = GrowingTotalClient()
-        rows_by_code = client._fetch_size_rank_partition("25", 1, {})
+        rows_by_code, _ = client._fetch_size_rank_partition("25", 1, {})
 
         self.assertEqual(client.pages, [1, 2, 3])
         self.assertEqual(sorted(rows_by_code), ["000001", "000002", "000003"])
@@ -237,10 +238,80 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = CappedClient()
-        rows = client._fetch_size_rank_partition("27", 2, {"ESTABDATE": "6", "RISKLEVEL": "4"})
+        rows, declared_total = client._fetch_size_rank_partition("27", 2, {"ESTABDATE": "6", "RISKLEVEL": "4"})
 
         self.assertEqual(sorted(rows), ["000001", "000002", "000003", "000004", "000005"])
+        self.assertEqual(declared_total, 5)
         self.assertEqual(client.calls, [("desc", 1), ("desc", 2), ("desc", 3), ("asc", 1)])
+
+    def test_fetch_size_rank_partition_allows_unranked_rows_after_orders_overlap(self):
+        class UnrankedTailClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.calls = []
+
+            def _get(self, _url, params=None, referer=None):
+                if "ENDNAV" in params:
+                    bucket = str(params["ENDNAV"])
+                    self.calls.append(("bucket", bucket))
+                    return json.dumps({"Success": True, "TotalCount": 5 if bucket == "1" else 0, "Datas": []})
+                direction = str(params["Sort"])
+                page = int(params["pageIndex"])
+                self.calls.append((direction, page))
+                if direction == "desc":
+                    codes = {1: ("000001", "000002"), 2: ("000003", "000004")}.get(page, ())
+                else:
+                    codes = {1: ("000005", "000004"), 2: ("000004", "000003")}.get(page, ())
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 6,
+                    "Datas": [
+                        {"FCODE": code, "SHORTNAME": f"基金{code}", "ENDNAV": "100000000"}
+                        for code in codes
+                    ],
+                })
+
+        client = UnrankedTailClient()
+        rows, declared_total = client._fetch_size_rank_partition("27", 2, {"ESTABDATE": "6", "RISKLEVEL": "4"})
+
+        self.assertEqual(sorted(rows), ["000001", "000002", "000003", "000004", "000005"])
+        self.assertEqual(declared_total, 6)
+        self.assertEqual(
+            client.calls,
+            [("desc", 1), ("desc", 2), ("desc", 3), ("asc", 1), ("asc", 2)]
+            + [("bucket", bucket) for bucket in ("1", "2", "3", "4", "5")],
+        )
+
+    def test_fetch_size_rank_partition_rejects_missing_ranked_rows(self):
+        class MissingRankedClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+
+            def _get(self, _url, params=None, referer=None):
+                if "ENDNAV" in params:
+                    return json.dumps({
+                        "Success": True,
+                        "TotalCount": 6 if str(params["ENDNAV"]) == "1" else 0,
+                        "Datas": [],
+                    })
+                direction = str(params["Sort"])
+                page = int(params["pageIndex"])
+                if direction == "desc":
+                    codes = {1: ("000001", "000002"), 2: ("000003", "000004")}.get(page, ())
+                else:
+                    codes = {1: ("000005", "000004"), 2: ("000004", "000003")}.get(page, ())
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 6,
+                    "Datas": [
+                        {"FCODE": code, "SHORTNAME": f"基金{code}", "ENDNAV": "100000000"}
+                        for code in codes
+                    ],
+                })
+
+        client = MissingRankedClient()
+        with self.assertRaisesRegex(RuntimeError, "可排序覆盖不完整.*5/6"):
+            client._fetch_size_rank_partition("27", 2, {"ESTABDATE": "6", "RISKLEVEL": "4"})
 
     def test_size_rank_partitions_split_the_oldest_mixed_funds_by_risk(self):
         stock_partitions = FundClient._size_rank_partitions("25")
@@ -268,7 +339,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = IncompletePartitionClient()
-        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一1/分区1/总数2"):
+        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一1/可排序1/分区总数1/父级总数2"):
             client.fetch_size_rankings(fund_types=("25",))
 
     def test_fetch_size_rankings_rejects_cross_partition_overlap(self):
@@ -293,7 +364,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = OverlappingPartitionClient()
-        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一2/分区3/总数2"):
+        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一2/可排序3/分区总数3/父级总数2"):
             client.fetch_size_rankings(fund_types=("25",))
 
     def test_parse_fund_catalog_keeps_code_name_and_type(self):
