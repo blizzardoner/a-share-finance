@@ -344,7 +344,7 @@ class FundClient:
         fund_type: str,
         page_size: int,
         filters: dict[str, str],
-    ) -> dict[str, dict[str, Any]]:
+    ) -> tuple[dict[str, dict[str, Any]], int]:
         page = 1
         category: dict[str, dict[str, Any]] = {}
         total = 0
@@ -375,6 +375,7 @@ class FundClient:
             if page >= max_pages:
                 break
             page += 1
+        ascending_exhausted = False
         if len(category) < total and hit_empty_page:
             ascending_page = 1
             while len(category) < total and ascending_page <= max_pages:
@@ -389,6 +390,7 @@ class FundClient:
                     total = current_total
                     max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
                 if not rows:
+                    ascending_exhausted = True
                     break
                 previous_count = len(category)
                 for row in rows:
@@ -396,12 +398,37 @@ class FundClient:
                     if code:
                         category[code] = row
                 if len(category) == previous_count:
+                    ascending_exhausted = True
                     break
                 self.progress(f"基金规模 {label}/asc: {ascending_page} · {len(category)}/{total}")
                 ascending_page += 1
-        if len(category) != total:
+            if ascending_page > max_pages:
+                ascending_exhausted = True
+        ranked_category = {
+            code: row
+            for code, row in category.items()
+            if (_number(row.get("end_nav")) or 0) > 0
+        }
+        if len(category) != total and not (hit_empty_page and ascending_exhausted):
             raise RuntimeError(f"基金规模排名覆盖不完整 {label}: {len(category)}/{total}")
-        return category
+        if len(category) < total:
+            ranked_total = sum(
+                self._request_size_rank_page(
+                    fund_type,
+                    page_size,
+                    1,
+                    {**filters, "ENDNAV": size_bucket},
+                )[1]
+                for size_bucket in ("1", "2", "3", "4", "5")
+            )
+            if len(ranked_category) != ranked_total:
+                raise RuntimeError(
+                    f"基金规模排名可排序覆盖不完整 {label}: "
+                    f"{len(ranked_category)}/{ranked_total}，父级{total}"
+                )
+        if len(ranked_category) < total:
+            self.progress(f"基金规模 {label}: {total - len(ranked_category)}条无可排序规模，已排除")
+        return ranked_category, total
 
     @staticmethod
     def _size_rank_partitions(fund_type: str) -> tuple[dict[str, str], ...]:
@@ -423,15 +450,18 @@ class FundClient:
         for fund_type in fund_types:
             category: dict[str, dict[str, Any]] = {}
             partition_count = 0
+            partition_declared_total = 0
             parent_total = self._request_size_rank_page(fund_type, page_size, 1, {})[1]
             for filters in self._size_rank_partitions(fund_type):
-                partition = self._fetch_size_rank_partition(fund_type, page_size, filters)
+                partition, declared_total = self._fetch_size_rank_partition(fund_type, page_size, filters)
                 partition_count += len(partition)
+                partition_declared_total += declared_total
                 category.update(partition)
-            if partition_count != parent_total or len(category) != parent_total:
+            if partition_declared_total != parent_total or partition_count != len(category):
                 raise RuntimeError(
                     f"基金规模排名分区覆盖不完整 {fund_type}: "
-                    f"唯一{len(category)}/分区{partition_count}/总数{parent_total}"
+                    f"唯一{len(category)}/可排序{partition_count}/"
+                    f"分区总数{partition_declared_total}/父级总数{parent_total}"
                 )
             combined.update(category)
         return [combined[code] for code in sorted(combined)]
