@@ -12,6 +12,8 @@ import {
   formatPercent,
   fundDataUrl,
   fundEventText,
+  fundStockEventsUrl,
+  fundTrackingStatusText,
   isNavigableStockCode,
   joinRankingRows,
   rankingMetricText,
@@ -29,7 +31,7 @@ const basePath = location.pathname.endsWith('/') ? location.pathname : location.
 const state = {
   stocks: [], activeCode: null, data: null, ready: false, companyRequest: 0,
   ranking: { kind: 'dividend', years: 3, rows: [], meta: null, visible: 100, requestId: 0, loading: false, cache: new Map() },
-  funds: { mode: 'consensus-positive', consensus: [], events: [], universe: [], meta: null, visible: 100, loading: false, loaded: false },
+  funds: { mode: 'consensus-positive', consensus: [], events: [], universe: [], meta: null, visible: 100, loading: false, loaded: false, eventsLoaded: false },
 }
 const fundViewOwner = createViewOwner()
 
@@ -214,7 +216,7 @@ function openRanking() {
 const shareNumber = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 })
 
 function fundConsensusRow(row, index) {
-  const managers = [...new Set((row.events || []).map(event => event.manager_name).filter(Boolean))].slice(0, 3).join('、') || '经理未知'
+  const managers = [...new Set(row.manager_names || (row.events || []).map(event => event.manager_name).filter(Boolean))].slice(0, 3).join('、') || '经理未知'
   const rawScore = Number(row.consensus_score)
   const score = Number.isFinite(rawScore) ? rawScore : 0
   const scoreText = `${score > 0 ? '+' : ''}${finiteNumberText(score, 1, '0.0')}`
@@ -237,10 +239,9 @@ function fundEventRow(event) {
 }
 
 function fundUniverseRow(fund, index) {
-  const rawScore = Number(fund.screen_score)
-  const score = Number.isFinite(rawScore) ? rawScore : 0
   const size = fund.fund_size == null ? '—' : `${finiteNumberText(fund.fund_size, 2)}亿`
-  return `<article class="fund-universe-row"><span class="ranking-position">${finiteNumberText(index + 1, 0)}</span><span><strong>${escapeHtml(fund.name)}</strong><small>${escapeHtml(fund.code)} · ${escapeHtml(fund.manager_name || '经理未知')} · 规模 ${size}</small><em>近3年 ${formatPercent(fund.return_3y)} · 抗风险 ${finiteNumberText(fund.risk_score)} · 稳定性 ${finiteNumberText(fund.stability_score)}</em></span><b>${finiteNumberText(score, 1, '0.0')}<small>筛选分</small></b></article>`
+  const status = fundTrackingStatusText(fund.tracking_status)
+  return `<article class="fund-universe-row"><span class="ranking-position">${finiteNumberText(index + 1, 0)}</span><span><strong>${escapeHtml(fund.name)}</strong><small>${escapeHtml(fund.code)} · ${escapeHtml(fund.manager_name || '经理待更新')} · 规模 ${size}</small><em>${escapeHtml(status.label)} · 近3年 ${formatPercent(fund.return_3y)} · 抗风险 ${finiteNumberText(fund.risk_score)} · 稳定性 ${finiteNumberText(fund.stability_score)}</em></span><b>${escapeHtml(status.short)}<small>持仓状态</small></b></article>`
 }
 
 function syncFundControls() {
@@ -255,7 +256,8 @@ function renderFundView() {
   const filtered = filterFundRows(source, $('fund-search').value, state.funds.mode)
   const visible = filtered.slice(0, state.funds.visible)
   const period = state.funds.meta?.report_period || state.funds.consensus[0]?.report_period || '—'
-  $('fund-status').textContent = `报告期 ${period} · ${filtered.length}项 · 研究池 ${state.funds.universe.length}只`
+  const tracked = state.funds.meta?.tracked_count ?? state.funds.universe.length
+  $('fund-status').textContent = `报告期 ${period} · ${filtered.length}项 · 规模前${state.funds.universe.length}只 · 已完成${tracked}只`
   if (state.funds.mode === 'universe') {
     $('fund-list').innerHTML = visible.map(fundUniverseRow).join('') || '<div class="data-card empty">没有匹配基金</div>'
   } else if (state.funds.mode.startsWith('consensus-')) {
@@ -268,15 +270,14 @@ function renderFundView() {
 
 const fundDataLoader = createSingleFlightLoader(async () => {
   state.funds.loading = true
-  const names = ['consensus', 'events', 'universe']
+  const names = ['consensus', 'universe']
   try {
     const responses = await Promise.all(names.map(name => fetch(fundDataUrl(basePath, name))))
     responses.forEach((response, index) => { if (!response.ok) throw new Error(`基金${names[index]}数据返回 ${response.status}`) })
-    const [consensus, events, universe] = await Promise.all(responses.map(response => response.json()))
+    const [consensus, universe] = await Promise.all(responses.map(response => response.json()))
     state.funds.consensus = consensus.rows || []
-    state.funds.events = events.events || []
     state.funds.universe = universe.funds || []
-    state.funds.meta = consensus.meta || events.meta || universe.meta || null
+    state.funds.meta = consensus.meta || universe.meta || null
     state.funds.loaded = true
     return state.funds
   } finally {
@@ -285,6 +286,17 @@ const fundDataLoader = createSingleFlightLoader(async () => {
 })
 
 const loadFundData = () => fundDataLoader.load()
+
+const fundEventsLoader = createSingleFlightLoader(async () => {
+  const response = await fetch(fundDataUrl(basePath, 'events'))
+  if (!response.ok) throw new Error(`基金events数据返回 ${response.status}`)
+  const payload = await response.json()
+  state.funds.events = payload.events || []
+  state.funds.eventsLoaded = true
+  return state.funds.events
+})
+
+const loadFundEvents = () => fundEventsLoader.load()
 
 async function openFundView() {
   if (!state.ready) {
@@ -319,11 +331,18 @@ async function renderCompanyFundPanel(code) {
   const viewToken = fundViewOwner.claim(`company:${code}`)
   const panel = $('panel-funds')
   panel.innerHTML = '<div class="loading-card compact"><div class="spinner"></div><strong>基金动向加载中</strong></div>'
-  await settleOwned(fundViewOwner, viewToken, loadFundData(), {
-    success: () => {
+  const task = Promise.all([
+    loadFundData(),
+    fetch(fundStockEventsUrl(basePath, code)).then(async response => {
+      if (response.status === 404) return []
+      if (!response.ok) throw new Error(`个股基金事件返回 ${response.status}`)
+      return (await response.json()).events || []
+    }),
+  ])
+  await settleOwned(fundViewOwner, viewToken, task, {
+    success: ([, events]) => {
       if (state.activeCode !== code) return
       const consensus = state.funds.consensus.find(row => row.code === code)
-      const events = state.funds.events.filter(event => event.stock_code === code && !['CENSORED', 'UNCHANGED'].includes(event.event_type))
       if (!consensus && !events.length) {
         panel.innerHTML = '<div class="data-card empty">当前研究池未披露该公司的明确持仓动作。未出现不代表基金没有持有。</div>'
         return
@@ -431,7 +450,26 @@ $('fund-close').addEventListener('click', () => {
   $('fund-view').hidden = true
   if (state.data) $('company-view').hidden = false
 })
-$('fund-modes').addEventListener('click', event => { const button=event.target.closest('[data-fund-mode]'); if(!button)return; state.funds.mode=button.dataset.fundMode; state.funds.visible=100; renderFundView() })
+$('fund-modes').addEventListener('click', async event => {
+  const button = event.target.closest('[data-fund-mode]')
+  if (!button) return
+  state.funds.mode = button.dataset.fundMode
+  state.funds.visible = 100
+  if (!state.funds.mode.startsWith('events-') || state.funds.eventsLoaded) {
+    renderFundView()
+    return
+  }
+  const viewToken = fundViewOwner.claim('fund-view')
+  $('fund-list').innerHTML = '<div class="loading-card compact"><div class="spinner"></div><strong>持仓事件加载中</strong></div>'
+  $('fund-status').textContent = '正在按需载入持仓事件…'
+  await settleOwned(fundViewOwner, viewToken, loadFundEvents(), {
+    success: renderFundView,
+    failure: error => {
+      $('fund-status').textContent = '持仓事件载入失败'
+      $('fund-list').innerHTML = `<div class="error-card"><strong>暂时无法读取基金事件</strong><p>${escapeHtml(error.message)}</p></div>`
+    },
+  })
+})
 $('fund-search').addEventListener('input', () => { state.funds.visible=100; renderFundView() })
 $('fund-list').addEventListener('click', event => { const target=event.target.closest('[data-fund-stock]'); if(target)selectCompany(target.dataset.fundStock) })
 $('fund-more').addEventListener('click', () => { state.funds.visible += 100; renderFundView() })

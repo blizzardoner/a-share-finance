@@ -60,6 +60,17 @@ export function fundDataUrl(basePath, name) {
   return `${base}data/funds/${name}.json`
 }
 
+export function fundStockEventsUrl(basePath, code) {
+  const base = basePath.endsWith('/') ? basePath : `${basePath}/`
+  return `${base}data/funds/stocks/${code.slice(0, 2)}/${code}.json`
+}
+
+export function fundTrackingStatusText(status) {
+  if (status === 'tracked') return { label: '持仓已更新', short: '已更新' }
+  if (status === 'update_failed') return { label: '更新失败，沿用旧数据', short: '更新失败' }
+  return { label: '等待轮询', short: '待更新' }
+}
+
 export function createSingleFlightLoader(loadValue) {
   let loaded = false
   let value
