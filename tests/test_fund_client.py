@@ -118,7 +118,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = FakeClient()
-        rows = client.fetch_size_rankings(fund_types=("25", "27"), page_size=1)
+        rows = client.fetch_size_rankings(fund_types=("25", "27"), page_size=1, partition_filters=({},))
 
         self.assertEqual(client.calls, [("25", 1, 1), ("25", 2, 1), ("27", 1, 1), ("27", 2, 1)])
         self.assertEqual(len(set(client.devices)), 4)
@@ -141,7 +141,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = BusyOnceClient()
-        rows = client.fetch_size_rankings(fund_types=("25",), page_size=30)
+        rows = client.fetch_size_rankings(fund_types=("25",), page_size=30, partition_filters=({},))
 
         self.assertEqual(client.calls, 2)
         self.assertEqual(rows[0]["code"], "000001")
@@ -164,7 +164,7 @@ class FundRankingClientTests(unittest.TestCase):
 
         client = RepeatingPageClient()
         with self.assertRaisesRegex(RuntimeError, "基金规模排名分页未前进"):
-            client.fetch_size_rankings(fund_types=("25",), page_size=1)
+            client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
         self.assertEqual(client.calls, 2)
 
     def test_fetch_size_rankings_extends_when_total_grows_mid_scan(self):
@@ -183,7 +183,7 @@ class FundRankingClientTests(unittest.TestCase):
                 })
 
         client = GrowingTotalClient()
-        rows = client.fetch_size_rankings(fund_types=("25",), page_size=1)
+        rows = client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
 
         self.assertEqual(client.pages, [1, 2, 3])
         self.assertEqual([row["code"] for row in rows], ["000001", "000002", "000003"])
@@ -207,8 +207,62 @@ class FundRankingClientTests(unittest.TestCase):
 
         client = EverGrowingClient()
         with self.assertRaisesRegex(RuntimeError, "覆盖不完整"):
-            client.fetch_size_rankings(fund_types=("25",), page_size=1)
+            client.fetch_size_rankings(fund_types=("25",), page_size=1, partition_filters=({},))
         self.assertEqual(len(client.pages), 12)
+
+    def test_size_rank_partitions_split_the_oldest_mixed_funds_by_risk(self):
+        stock_partitions = FundClient._size_rank_partitions("25")
+        mixed_partitions = FundClient._size_rank_partitions("27")
+
+        self.assertEqual(stock_partitions, tuple({"ESTABDATE": age} for age in ("1", "2", "3", "4", "5", "6")))
+        self.assertEqual(mixed_partitions[:5], tuple({"ESTABDATE": age} for age in ("1", "2", "3", "4", "5")))
+        self.assertEqual(
+            mixed_partitions[5:],
+            tuple({"ESTABDATE": "6", "RISKLEVEL": risk} for risk in ("1", "2", "3", "4", "5")),
+        )
+
+    def test_fetch_size_rankings_rejects_cross_partition_coverage_gap(self):
+        class IncompletePartitionClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+
+            def _get(self, _url, params=None, referer=None):
+                age = params.get("ESTABDATE")
+                rows = [{"FCODE": "000001", "SHORTNAME": "基金1", "ENDNAV": "100000000"}] if age == "1" else []
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 2 if age is None else len(rows),
+                    "Datas": rows,
+                })
+
+        client = IncompletePartitionClient()
+        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一1/分区1/总数2"):
+            client.fetch_size_rankings(fund_types=("25",))
+
+    def test_fetch_size_rankings_rejects_cross_partition_overlap(self):
+        class OverlappingPartitionClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+
+            def _get(self, _url, params=None, referer=None):
+                age = params.get("ESTABDATE")
+                rows = []
+                if age == "1":
+                    rows = [
+                        {"FCODE": "000001", "SHORTNAME": "基金1", "ENDNAV": "100000000"},
+                        {"FCODE": "000002", "SHORTNAME": "基金2", "ENDNAV": "100000000"},
+                    ]
+                elif age == "2":
+                    rows = [{"FCODE": "000001", "SHORTNAME": "基金1", "ENDNAV": "100000000"}]
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 2 if age is None else len(rows),
+                    "Datas": rows,
+                })
+
+        client = OverlappingPartitionClient()
+        with self.assertRaisesRegex(RuntimeError, "分区覆盖不完整 25: 唯一2/分区3/总数2"):
+            client.fetch_size_rankings(fund_types=("25",))
 
     def test_parse_fund_catalog_keeps_code_name_and_type(self):
         rows = parse_fund_catalog('var r = [["000001","HXCZHH","华夏成长混合","混合型-灵活","HUAXIACHENGZHANG"]];')
