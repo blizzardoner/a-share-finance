@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 ashare-finance = "ashare_finance.cli:main"
+ashare-funds = "ashare_finance.fund_poll:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ashare_finance"]

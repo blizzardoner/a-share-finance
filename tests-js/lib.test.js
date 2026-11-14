@@ -12,7 +12,9 @@ import {
   finiteNumberText,
   formatMoney,
   fundDataUrl,
+  fundStockEventsUrl,
   fundEventText,
+  fundTrackingStatusText,
   isNavigableStockCode,
   joinRankingRows,
   rankingMetricText,
@@ -193,6 +195,19 @@ test('performance metric text explains the selected period and all score inputs'
 test('fundDataUrl is GitHub Pages subpath safe', () => {
   assert.equal(fundDataUrl('/a-share-finance/', 'consensus'), '/a-share-finance/data/funds/consensus.json')
   assert.equal(fundDataUrl('/a-share-finance', 'events'), '/a-share-finance/data/funds/events.json')
+})
+
+test('fundStockEventsUrl loads only one company event shard', () => {
+  assert.equal(
+    fundStockEventsUrl('/a-share-finance/', '600519'),
+    '/a-share-finance/data/funds/stocks/60/600519.json',
+  )
+})
+
+test('fund tracking status distinguishes failed refreshes from pending coverage', () => {
+  assert.deepEqual(fundTrackingStatusText('tracked'), { label: '持仓已更新', short: '已更新' })
+  assert.deepEqual(fundTrackingStatusText('update_failed'), { label: '更新失败，沿用旧数据', short: '更新失败' })
+  assert.deepEqual(fundTrackingStatusText('pending'), { label: '等待轮询', short: '待更新' })
 })
 
 test('filterFundRows separates positive and negative consensus and searches locally', () => {

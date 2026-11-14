@@ -1,11 +1,30 @@
 import unittest
+import json
 import tempfile
 from pathlib import Path
 
-from ashare_finance.fund_client import FundClient, parse_fund_catalog, parse_fund_details, parse_notice_content, parse_notice_list
+from ashare_finance.fund_client import FundClient, parse_fund_catalog, parse_fund_details, parse_notice_content, parse_notice_list, parse_size_rank_payload
 
 
 class FundDetailParsingTests(unittest.TestCase):
+    def test_parse_size_rank_payload_keeps_scale_and_pagination(self):
+        payload = '''{
+          "Success": true,
+          "TotalCount": 2,
+          "Datas": [
+            {"FCODE": "000001", "SHORTNAME": "甲基金A", "ENDNAV": "1234567890.12", "SYL_3N": "45.67"},
+            {"FCODE": "000002", "SHORTNAME": "乙基金", "ENDNAV": "--"}
+          ]
+        }'''
+
+        rows, total = parse_size_rank_payload(payload)
+
+        self.assertEqual(total, 2)
+        self.assertEqual(rows, [
+            {"code": "000001", "name": "甲基金A", "end_nav": 1234567890.12, "return_3y": 45.67},
+            {"code": "000002", "name": "乙基金", "end_nav": None, "return_3y": None},
+        ])
+
     def test_parse_fund_details_extracts_manager_risk_stability_and_latest_size(self):
         payload = '''
         var fS_name = "财通成长优选混合A";
@@ -74,6 +93,72 @@ class FundRankingClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "基金排名覆盖不完整"):
             DuplicateClient(min_interval=0).fetch_rankings(fund_types=("gp",))
+
+    def test_fetch_size_rankings_collects_all_pages_for_each_requested_type(self):
+        class FakeClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0)
+                self.calls = []
+
+            def _get(self, _url, params=None, referer=None):
+                fund_type = str(params["FundType"])
+                page = int(params["pageIndex"])
+                self.calls.append((fund_type, page, int(params["pageSize"])))
+                code = f"{fund_type}{page:04d}"
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 2,
+                    "Datas": [{"FCODE": code, "SHORTNAME": f"基金{code}", "ENDNAV": str(page * 1e8)}],
+                })
+
+        client = FakeClient()
+        rows = client.fetch_size_rankings(fund_types=("25", "27"), page_size=1)
+
+        self.assertEqual(client.calls, [("25", 1, 1), ("25", 2, 1), ("27", 1, 1), ("27", 2, 1)])
+        self.assertEqual([row["code"] for row in rows], ["250001", "250002", "270001", "270002"])
+
+    def test_fetch_size_rankings_retries_provider_busy_payload(self):
+        class BusyOnceClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0, retries=2)
+                self.calls = 0
+
+            def _get(self, _url, params=None, referer=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return json.dumps({"Success": False, "ErrMsg": "网络繁忙，请稍后重试！"})
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 1,
+                    "Datas": [{"FCODE": "000001", "SHORTNAME": "甲基金A", "ENDNAV": "100000000"}],
+                })
+
+        client = BusyOnceClient()
+        rows = client.fetch_size_rankings(fund_types=("25",), page_size=30)
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(rows[0]["code"], "000001")
+
+    def test_fetch_size_rankings_rejects_repeated_pages_without_progress(self):
+        class RepeatingPageClient(FundClient):
+            def __init__(self):
+                super().__init__(min_interval=0, retries=1)
+                self.calls = 0
+
+            def _get(self, _url, params=None, referer=None):
+                self.calls += 1
+                if self.calls > 2:
+                    raise RuntimeError("test request cap exceeded")
+                return json.dumps({
+                    "Success": True,
+                    "TotalCount": 2,
+                    "Datas": [{"FCODE": "250001", "SHORTNAME": "重复基金", "ENDNAV": "100000000"}],
+                })
+
+        client = RepeatingPageClient()
+        with self.assertRaisesRegex(RuntimeError, "基金规模排名分页未前进"):
+            client.fetch_size_rankings(fund_types=("25",), page_size=1)
+        self.assertEqual(client.calls, 2)
 
     def test_parse_fund_catalog_keeps_code_name_and_type(self):
         rows = parse_fund_catalog('var r = [["000001","HXCZHH","华夏成长混合","混合型-灵活","HUAXIACHENGZHANG"]];')

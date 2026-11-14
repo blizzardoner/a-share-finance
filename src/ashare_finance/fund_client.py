@@ -72,6 +72,23 @@ def parse_rank_payload(payload: str) -> tuple[list[dict[str, Any]], int, int, in
     return rows, meta("allRecords", len(rows)), meta("allPages", 1), meta("pageIndex", 1)
 
 
+def parse_size_rank_payload(payload: str) -> tuple[list[dict[str, Any]], int]:
+    document = json.loads(payload)
+    if document.get("Success") is not True:
+        raise ValueError(f"基金规模排名接口失败: {document.get('ErrMsg') or document.get('ErrorMessage') or 'unknown'}")
+    rows = [
+        {
+            "code": str(item.get("FCODE") or "").strip(),
+            "name": str(item.get("SHORTNAME") or "").strip(),
+            "end_nav": _number(item.get("ENDNAV")),
+            "return_3y": _number(item.get("SYL_3N")),
+        }
+        for item in (document.get("Datas") or [])
+        if item.get("FCODE") and item.get("SHORTNAME")
+    ]
+    return rows, int(document.get("TotalCount") or len(rows))
+
+
 def _json_variable(payload: str, name: str) -> Any:
     match = re.search(rf"\bvar\s+{re.escape(name)}\s*=\s*", payload)
     if not match:
@@ -196,6 +213,7 @@ def parse_notice_content(payload: str) -> dict[str, str]:
 class FundClient:
     CATALOG_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
     RANK_URL = "https://fund.eastmoney.com/data/rankhandler.aspx"
+    SIZE_RANK_URL = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNRank"
     DETAILS_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
     NOTICES_URL = "https://api.fund.eastmoney.com/f10/JJGG"
     CONTENT_URL = "https://np-cnotice-fund.eastmoney.com/api/content/ann"
@@ -282,6 +300,68 @@ class FundClient:
             if len(category_map) != total:
                 raise RuntimeError(f"基金排名覆盖不完整 {fund_type}: {len(category_map)}/{total}")
             combined.update(category_map)
+        return [combined[code] for code in sorted(combined)]
+
+    def fetch_size_rankings(
+        self,
+        fund_types: tuple[str, ...] = ("25", "27"),
+        page_size: int = 30,
+    ) -> list[dict[str, Any]]:
+        if not 1 <= page_size <= 30:
+            raise ValueError("基金规模排名每页数量必须在1到30之间")
+        combined: dict[str, dict[str, Any]] = {}
+        for fund_type in fund_types:
+            page = 1
+            category: dict[str, dict[str, Any]] = {}
+            total = 0
+            max_pages = 1
+            while page == 1 or len(category) < total:
+                params = {
+                    "FundType": fund_type,
+                    "SortColumn": "ENDNAV",
+                    "Sort": "desc",
+                    "pageIndex": page,
+                    "pageSize": page_size,
+                    "BUY": "true",
+                    "DataConstraintType": 0,
+                    "product": "EFund",
+                    "plat": "Android",
+                    "version": "6.4.7",
+                    "deviceid": "ashare-finance",
+                }
+                last_error: ValueError | None = None
+                for attempt in range(1, self.retries + 1):
+                    try:
+                        rows, current_total = parse_size_rank_payload(self._get(self.SIZE_RANK_URL, params))
+                        break
+                    except ValueError as error:
+                        last_error = error
+                        if attempt >= self.retries:
+                            raise
+                        time.sleep(min(2.0, max(0.05, self.min_interval) * 2 ** (attempt - 1)))
+                else:
+                    raise last_error or RuntimeError("基金规模排名读取失败")
+                if page == 1:
+                    total = current_total
+                    max_pages = max(1, (total + page_size - 1) // page_size)
+                elif current_total != total:
+                    raise RuntimeError(f"基金规模排名分页元数据变化: {fund_type}")
+                if not rows:
+                    break
+                previous_count = len(category)
+                for row in rows:
+                    code = str(row.get("code") or "")
+                    if code:
+                        category[code] = row
+                if len(category) == previous_count:
+                    raise RuntimeError(f"基金规模排名分页未前进 {fund_type}: 第{page}页")
+                self.progress(f"基金规模 {fund_type}: {page} · {len(category)}/{total}")
+                if page >= max_pages:
+                    break
+                page += 1
+            if len(category) != total:
+                raise RuntimeError(f"基金规模排名覆盖不完整 {fund_type}: {len(category)}/{total}")
+            combined.update(category)
         return [combined[code] for code in sorted(combined)]
 
     def fetch_details(self, code: str) -> dict[str, Any]:
