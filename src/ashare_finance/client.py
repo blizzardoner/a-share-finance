@@ -89,6 +89,18 @@ class EastmoneyClient:
                 self.progress(f"{label}: {page}/{pages} · {len(rows)} rows")
         return rows
 
+    def _request_stock_page(self, params: dict[str, Any], page: int) -> dict[str, Any]:
+        preferred = (page - 1) % len(self.STOCK_URLS)
+        last_error: OSError | None = None
+        for offset in range(len(self.STOCK_URLS)):
+            url = self.STOCK_URLS[(preferred + offset) % len(self.STOCK_URLS)]
+            try:
+                return self._request(url, params)
+            except OSError as error:
+                last_error = error
+                self.progress(f"A股目录第{page}页主机失败，切换备用接口: {url}")
+        raise last_error or RuntimeError(f"A股目录第{page}页读取失败")
+
     def fetch_stocks(self) -> list[dict[str, Any]]:
         params = {
             "pn": 1,
@@ -101,7 +113,7 @@ class EastmoneyClient:
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
             "fields": "f2,f3,f9,f12,f13,f14,f20,f21,f100",
         }
-        first = self._request(self.STOCK_URLS[0], params)
+        first = self._request_stock_page(params, 1)
         data = first.get("data") or {}
         rows = list(_quote_rows(first, "行情目录"))
         raw_total = data.get("total")
@@ -116,7 +128,7 @@ class EastmoneyClient:
             current["pn"] = page
             if self.min_interval > 0:
                 time.sleep(max(0.0, 0.8 - self.min_interval))
-            payload = self._request(self.STOCK_URLS[(page - 1) % len(self.STOCK_URLS)], current)
+            payload = self._request_stock_page(current, page)
             rows.extend(_quote_rows(payload, f"行情目录第{page}页"))
             self.progress(f"A股目录: {page}/{pages} · {len(rows)}/{total}")
         unique_codes = {str(row.get("f12") or "") for row in rows if row.get("f12")}
