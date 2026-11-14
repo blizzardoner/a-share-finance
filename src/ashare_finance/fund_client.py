@@ -304,70 +304,110 @@ class FundClient:
             combined.update(category_map)
         return [combined[code] for code in sorted(combined)]
 
+    def _request_size_rank_page(
+        self,
+        fund_type: str,
+        page_size: int,
+        page: int,
+        filters: dict[str, str],
+    ) -> tuple[list[dict[str, Any]], int]:
+        params = {
+            "FundType": fund_type,
+            "SortColumn": "ENDNAV",
+            "Sort": "desc",
+            "pageIndex": page,
+            "pageSize": page_size,
+            "BUY": "true",
+            "DataConstraintType": 0,
+            "product": "EFund",
+            "plat": "Android",
+            "version": "6.4.7",
+            "deviceid": str(uuid.uuid4()),
+            **filters,
+        }
+        last_error: ValueError | None = None
+        for attempt in range(1, self.retries + 1):
+            try:
+                if attempt > 1:
+                    params["deviceid"] = str(uuid.uuid4())
+                return parse_size_rank_payload(self._get(self.SIZE_RANK_URL, params))
+            except ValueError as error:
+                last_error = error
+                if attempt >= self.retries:
+                    raise
+                time.sleep(min(2.0, max(0.05, self.min_interval) * 2 ** (attempt - 1)))
+        raise last_error or RuntimeError("基金规模排名读取失败")
+
+    def _fetch_size_rank_partition(
+        self,
+        fund_type: str,
+        page_size: int,
+        filters: dict[str, str],
+    ) -> dict[str, dict[str, Any]]:
+        page = 1
+        category: dict[str, dict[str, Any]] = {}
+        total = 0
+        max_pages = 1
+        page_cap = 1
+        label = f"{fund_type}/" + "/".join(f"{key}-{value}" for key, value in sorted(filters.items()))
+        while page == 1 or len(category) < total:
+            rows, current_total = self._request_size_rank_page(fund_type, page_size, page, filters)
+            if page == 1:
+                total = current_total
+                max_pages = max(1, (total + page_size - 1) // page_size)
+                page_cap = max_pages + 10
+            elif current_total > total:
+                total = current_total
+                max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
+            if not rows:
+                break
+            previous_count = len(category)
+            for row in rows:
+                code = str(row.get("code") or "")
+                if code:
+                    category[code] = row
+            if len(category) == previous_count:
+                raise RuntimeError(f"基金规模排名分页未前进 {label}: 第{page}页")
+            self.progress(f"基金规模 {label}: {page} · {len(category)}/{total}")
+            if page >= max_pages:
+                break
+            page += 1
+        if len(category) != total:
+            raise RuntimeError(f"基金规模排名覆盖不完整 {label}: {len(category)}/{total}")
+        return category
+
+    @staticmethod
+    def _size_rank_partitions(fund_type: str) -> tuple[dict[str, str], ...]:
+        partitions = [{"ESTABDATE": age} for age in ("1", "2", "3", "4", "5")]
+        if fund_type == "27":
+            partitions.extend({"ESTABDATE": "6", "RISKLEVEL": risk} for risk in ("1", "2", "3", "4", "5"))
+        else:
+            partitions.append({"ESTABDATE": "6"})
+        return tuple(partitions)
+
     def fetch_size_rankings(
         self,
         fund_types: tuple[str, ...] = ("25", "27"),
         page_size: int = 30,
+        partition_filters: tuple[dict[str, str], ...] | None = None,
     ) -> list[dict[str, Any]]:
         if not 1 <= page_size <= 30:
             raise ValueError("基金规模排名每页数量必须在1到30之间")
         combined: dict[str, dict[str, Any]] = {}
         for fund_type in fund_types:
-            page = 1
             category: dict[str, dict[str, Any]] = {}
-            total = 0
-            max_pages = 1
-            page_cap = 1
-            while page == 1 or len(category) < total:
-                params = {
-                    "FundType": fund_type,
-                    "SortColumn": "ENDNAV",
-                    "Sort": "desc",
-                    "pageIndex": page,
-                    "pageSize": page_size,
-                    "BUY": "true",
-                    "DataConstraintType": 0,
-                    "product": "EFund",
-                    "plat": "Android",
-                    "version": "6.4.7",
-                    "deviceid": str(uuid.uuid4()),
-                }
-                last_error: ValueError | None = None
-                for attempt in range(1, self.retries + 1):
-                    try:
-                        if attempt > 1:
-                            params["deviceid"] = str(uuid.uuid4())
-                        rows, current_total = parse_size_rank_payload(self._get(self.SIZE_RANK_URL, params))
-                        break
-                    except ValueError as error:
-                        last_error = error
-                        if attempt >= self.retries:
-                            raise
-                        time.sleep(min(2.0, max(0.05, self.min_interval) * 2 ** (attempt - 1)))
-                else:
-                    raise last_error or RuntimeError("基金规模排名读取失败")
-                if page == 1:
-                    total = current_total
-                    max_pages = max(1, (total + page_size - 1) // page_size)
-                    page_cap = max_pages + 10
-                elif current_total > total:
-                    total = current_total
-                    max_pages = min(page_cap, max(max_pages, (total + page_size - 1) // page_size))
-                if not rows:
-                    break
-                previous_count = len(category)
-                for row in rows:
-                    code = str(row.get("code") or "")
-                    if code:
-                        category[code] = row
-                if len(category) == previous_count:
-                    raise RuntimeError(f"基金规模排名分页未前进 {fund_type}: 第{page}页")
-                self.progress(f"基金规模 {fund_type}: {page} · {len(category)}/{total}")
-                if page >= max_pages:
-                    break
-                page += 1
-            if len(category) != total:
-                raise RuntimeError(f"基金规模排名覆盖不完整 {fund_type}: {len(category)}/{total}")
+            partition_count = 0
+            partitions = partition_filters or self._size_rank_partitions(fund_type)
+            parent_total = self._request_size_rank_page(fund_type, page_size, 1, {})[1] if partition_filters is None else None
+            for filters in partitions:
+                partition = self._fetch_size_rank_partition(fund_type, page_size, filters)
+                partition_count += len(partition)
+                category.update(partition)
+            if parent_total is not None and (partition_count != parent_total or len(category) != parent_total):
+                raise RuntimeError(
+                    f"基金规模排名分区覆盖不完整 {fund_type}: "
+                    f"唯一{len(category)}/分区{partition_count}/总数{parent_total}"
+                )
             combined.update(category)
         return [combined[code] for code in sorted(combined)]
 
