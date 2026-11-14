@@ -182,6 +182,50 @@ class IncrementalFundRotationTests(unittest.TestCase):
             self.assertEqual(stale["last_attempted_at"], "2026-11-08T04:00:00Z")
             self.assertEqual(stale["last_update_error"], "provider unavailable")
 
+    def test_universe_refresh_uses_last_complete_universe_when_size_source_is_unavailable(self):
+        class BusySizeClient(RotationClient):
+            def fetch_size_rankings(self):
+                raise ValueError("基金规模排名接口失败: 网络繁忙")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_market_context(root)
+            run_fund_rotation(
+                data_root=root, client=RotationClient(), target_count=4, batch_size=2, shard_index=0,
+                refresh_universe=True, as_of=date(2026, 11, 8), generated_at="2026-11-08T00:00:00Z",
+            )
+
+            result = run_fund_rotation(
+                data_root=root, client=BusySizeClient(), target_count=4, batch_size=2, shard_index=1,
+                refresh_universe=True, as_of=date(2026, 11, 8), generated_at="2026-11-08T04:00:00Z",
+            )
+
+            self.assertEqual(result["fund_count"], 4)
+            self.assertEqual(result["updated_fund_count"], 2)
+            funds = json.loads((root / "funds" / "universe.json").read_text(encoding="utf-8"))["funds"]
+            self.assertEqual([fund["code"] for fund in funds], ["000001", "000002", "000003", "000004"])
+
+    def test_universe_refresh_rejects_duplicate_previous_codes_as_incomplete(self):
+        class BusySizeClient(RotationClient):
+            def fetch_size_rankings(self):
+                raise ValueError("基金规模排名接口失败: 网络繁忙")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_market_context(root)
+            ensure_empty_fund_state(root, "2026-11-08T00:00:00Z", target_count=4, batch_size=2)
+            duplicate = {"code": "000001", "name": "重复基金", "fund_size": 1, "screen_score": 100}
+            (root / "funds" / "universe.json").write_text(
+                json.dumps({"meta": {}, "funds": [duplicate, duplicate, duplicate, duplicate]}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "网络繁忙"):
+                run_fund_rotation(
+                    data_root=root, client=BusySizeClient(), target_count=4, batch_size=2, shard_index=0,
+                    refresh_universe=True, as_of=date(2026, 11, 8), generated_at="2026-11-08T04:00:00Z",
+                )
+
     def test_complete_shard_failure_aborts_without_publishing_success_metadata(self):
         class FailingClient(RotationClient):
             def fetch_details(self, code):

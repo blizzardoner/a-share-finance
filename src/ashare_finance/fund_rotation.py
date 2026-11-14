@@ -115,6 +115,21 @@ def select_shard(
     return funds[start:start + batch_size]
 
 
+def _is_complete_universe(funds: list[dict[str, Any]], target_count: int) -> bool:
+    codes = [str(fund.get("code") or "") for fund in funds]
+    return (
+        len(funds) == target_count
+        and len(set(codes)) == target_count
+        and all(len(code) == 6 and code.isdigit() for code in codes)
+        and all(
+            isinstance(fund.get("fund_size"), (int, float))
+            and not isinstance(fund.get("fund_size"), bool)
+            and float(fund["fund_size"]) > 0
+            for fund in funds
+        )
+    )
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -265,31 +280,39 @@ def run_fund_rotation(
         raise ValueError("基金轮询参数无效")
     fund_dir = data_root / "funds"
     universe_path = fund_dir / "universe.json"
+    previous_universe: list[dict[str, Any]] = []
     previous_funds: dict[str, dict[str, Any]] = {}
     if universe_path.exists():
+        previous_universe = list(_read_json(universe_path).get("funds") or [])
         previous_funds = {
             str(fund["code"]): fund
-            for fund in (_read_json(universe_path).get("funds") or [])
+            for fund in previous_universe
             if fund.get("code")
         }
     if refresh_universe or not universe_path.exists():
-        catalog_rows = client.fetch_catalog()
-        catalog = {row["code"]: row for row in catalog_rows if row.get("code")}
-        funds = build_size_universe(client.fetch_size_rankings(), catalog, target_count=target_count)
-        funds = [
-            {
-                **fund,
-                **{
-                    key: previous_funds[str(fund["code"])][key]
-                    for key in ("tracking_status", "last_attempted_at", "last_update_error")
-                    if key in previous_funds.get(str(fund["code"]), {})
-                },
-            }
-            for fund in funds
-        ]
+        try:
+            catalog_rows = client.fetch_catalog()
+            catalog = {row["code"]: row for row in catalog_rows if row.get("code")}
+            funds = build_size_universe(client.fetch_size_rankings(), catalog, target_count=target_count)
+            funds = [
+                {
+                    **fund,
+                    **{
+                        key: previous_funds[str(fund["code"])][key]
+                        for key in ("tracking_status", "last_attempted_at", "last_update_error")
+                        if key in previous_funds.get(str(fund["code"]), {})
+                    },
+                }
+                for fund in funds
+            ]
+        except (OSError, ValueError, RuntimeError) as error:
+            if not _is_complete_universe(previous_universe, target_count):
+                raise
+            print(f"基金规模池刷新失败，沿用上次完整目录: {error}")
+            funds = previous_universe
     else:
         funds = list(_read_json(universe_path).get("funds") or [])
-        if len(funds) != target_count:
+        if not _is_complete_universe(funds, target_count):
             raise RuntimeError(f"已发布基金池数量异常 {len(funds)}/{target_count}")
 
     shard_count = math.ceil(len(funds) / batch_size)
