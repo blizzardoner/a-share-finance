@@ -35,6 +35,125 @@ const state = {
 }
 const fundViewOwner = createViewOwner()
 
+// History carries a small, reloadable route. Rendered snapshots stay in memory:
+// no large financial payloads in history.state, and no refetch on a settled Back.
+const navigation = { id: null, nextId: 0, epoch: 0, view: 'company', code: null, back: null, snapshots: new Map() }
+const navigationInputs = ['stock-search', 'ranking-search', 'ranking-cap-min', 'ranking-cap-max', 'ranking-peg-min', 'ranking-peg-max', 'fund-search']
+const snapshotIds = ['loading', 'error-view', 'error-message', 'company-view', 'ranking-view', 'fund-view', 'search-results', 'ranking-list', 'ranking-status', 'ranking-description', 'ranking-more', 'fund-list', 'fund-status', 'fund-more', 'stock-exchange', 'stock-industry', 'stock-name', 'stock-code', 'stock-listing', 'latest-period', 'latest-notice', 'highlights', 'profit-chart', 'panel-overview', 'panel-balance', 'panel-cashflow', 'panel-dividend', 'panel-funds']
+
+function selectedTab() { return [...document.querySelectorAll('#tabs button')].find(button => button.classList.contains('active'))?.dataset.tab || 'overview' }
+function navigationRoute() {
+  return { view: navigation.view, code: navigation.code, back: navigation.back, tab: selectedTab(),
+    inputs: Object.fromEntries(navigationInputs.map(id => [id, $(id).value])), searchOpen: !$('search-results').hidden,
+    ranking: { kind: state.ranking.kind, years: state.ranking.years, visible: state.ranking.visible },
+    funds: { mode: state.funds.mode, visible: state.funds.visible }, scroll: window.scrollY }
+}
+function routeUrl(route) {
+  const query = new URLSearchParams()
+  if (route.view === 'company') query.set('code', route.code)
+  else query.set('view', route.view)
+  if (route.view === 'ranking') { query.set('kind', route.ranking.kind); query.set('years', route.ranking.years) }
+  return `${basePath}?${query}`
+}
+function saveNavigation(writeHistory = true) {
+  if (navigation.id === null) return
+  const route = navigationRoute()
+  navigation.snapshots.set(navigation.id, { route,
+    dom: Object.fromEntries(snapshotIds.map(id => [id, { html: $(id).innerHTML, text: $(id).textContent, hidden: $(id).hidden }])),
+    ranking: { rows: state.ranking.rows, meta: state.ranking.meta, loading: state.ranking.loading },
+    company: { activeCode: state.activeCode, data: state.data },
+    fundPending: state.funds.loading || (state.funds.mode.startsWith('events-') && !state.funds.eventsLoaded),
+  })
+  if (writeHistory) history.replaceState({ ashareNavigation: 1, id: navigation.id, route }, '', routeUrl(route))
+}
+function invalidateNavigation() {
+  navigation.epoch += 1
+  state.companyRequest += 1
+  state.ranking.requestId += 1
+  state.ranking.loading = false
+  fundViewOwner.invalidate()
+}
+function backLabel(route) {
+  if (route.searchOpen) return '返回搜索结果'
+  if (route.view === 'ranking') return '返回排行榜'
+  if (route.view === 'funds') return '返回基金动向'
+  return '返回上一家公司'
+}
+function syncBack() {
+  $('company-back').hidden = navigation.view !== 'company'
+  $('company-back').textContent = navigation.back?.label || '返回排行榜'
+}
+function beginNavigation(view, code = null, push = true) {
+  const previous = navigation.id === null ? null : { id: navigation.id, label: backLabel(navigationRoute()) }
+  if (push) saveNavigation()
+  invalidateNavigation()
+  navigation.view = view; navigation.code = code
+  if (push || navigation.id === null) {
+    navigation.id = ++navigation.nextId
+    navigation.back = previous
+  }
+  const route = navigationRoute()
+  history[push && previous ? 'pushState' : 'replaceState']({ ashareNavigation: 1, id: navigation.id, route }, '', routeUrl(route))
+  syncBack()
+}
+function restoreTab(tab) {
+  document.querySelectorAll('#tabs button').forEach(button => button.classList.toggle('active', button.dataset.tab === tab))
+  document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${tab}`))
+}
+async function restoreNavigation(entry) {
+  if (!entry?.ashareNavigation) return
+  saveNavigation(false) // popstate has already changed history.state; save the outgoing ID, never the incoming one.
+  invalidateNavigation()
+  const snapshot = navigation.snapshots.get(entry.id)
+  const route = snapshot?.route || entry.route
+  navigation.id = entry.id; navigation.nextId = Math.max(navigation.nextId, entry.id)
+  navigation.view = route.view; navigation.code = route.code; navigation.back = route.back
+  navigationInputs.forEach(id => { $(id).value = route.inputs[id] || '' })
+  Object.assign(state.ranking, route.ranking)
+  Object.assign(state.funds, route.funds)
+  restoreTab(route.tab)
+  if (snapshot) {
+    Object.assign(state.ranking, snapshot.ranking)
+    Object.assign(state, snapshot.company)
+    snapshotIds.forEach(id => {
+      const value = snapshot.dom[id]
+      if (!['loading', 'error-view', 'company-view', 'ranking-view', 'fund-view'].includes(id)) $(id).innerHTML = value.html
+      // textContent is already included by real DOM innerHTML; this branch also
+      // supports plain-text elements without rebuilding their child markup.
+      if (!value.html && !['loading', 'error-view', 'company-view', 'ranking-view', 'fund-view'].includes(id)) $(id).textContent = value.text
+      $(id).hidden = value.hidden
+    })
+    syncRankingControls(); syncFundControls(); syncBack()
+    if (route.searchOpen) renderSearch(route.inputs['stock-search'])
+  }
+  const needsCompany = route.view === 'company' && (!snapshot || !snapshot.dom.loading.hidden)
+  const needsRanking = route.view === 'ranking' && (!snapshot || snapshot.ranking.loading)
+  const needsFunds = route.view === 'funds' && (!snapshot || snapshot.fundPending || !state.funds.loaded || (route.funds.mode.startsWith('events-') && !state.funds.eventsLoaded))
+  const restoredId = navigation.id
+  let task
+  if (needsCompany) task = selectCompany(route.code, { navigate: false, scroll: false })
+  else if (needsRanking) task = openRanking({ navigate: false, scroll: false, visible: route.ranking.visible })
+  else if (needsFunds) task = openFundView({ navigate: false, scroll: false, visible: route.funds.visible })
+  else if (route.view === 'company' && route.tab === 'funds') renderCompanyFundPanel(route.code)
+  const restoredEpoch = navigation.epoch
+  await task
+  if (navigation.id !== restoredId || navigation.epoch !== restoredEpoch) return
+  $('stock-search').value = route.inputs['stock-search'] || ''
+  if (route.searchOpen) renderSearch($('stock-search').value)
+  else $('search-results').hidden = true
+  // Instant scroll avoids smooth-scroll callbacks landing after a later navigation.
+  window.scrollTo({ top: route.scroll, behavior: 'instant' })
+  saveNavigation()
+}
+function goBack() {
+  if (navigation.back) history.back()
+  else { navigation.back = null; openRanking({ navigate: false }) }
+}
+window.addEventListener('popstate', event => { restoreNavigation(event.state) })
+history.scrollRestoration = 'manual'
+window.addEventListener('pagehide', () => saveNavigation())
+document.addEventListener('input', () => saveNavigation())
+
 function toast(text) { const el = $('toast'); el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2200) }
 function dateText(value) { return escapeHtml(value || '—') }
 function latestAnnual(rows) { const annual = annualRows(rows); return annual[annual.length - 1] || rows[0] || {} }
@@ -161,13 +280,13 @@ function syncRankingControls() {
     : '可按当前总市值筛选；切换到PEG排行可查看对应周期的完整计算明细。'
 }
 
-async function loadRanking() {
+async function loadRanking({ visible = 100 } = {}) {
   if (!state.ready) return
   syncRankingControls()
   const kind = state.ranking.kind
   const key = `${kind}-${state.ranking.years}`
   const requestId = ++state.ranking.requestId
-  state.ranking.visible = 100
+  state.ranking.visible = visible
   state.ranking.rows = []
   state.ranking.meta = null
   state.ranking.loading = true
@@ -197,20 +316,19 @@ async function loadRanking() {
   }
 }
 
-function openRanking() {
+async function openRanking({ navigate = true, scroll = true, visible = 100 } = {}) {
   if (!state.ready) {
     toast('市场目录仍在载入，请稍候')
     return
   }
-  state.companyRequest += 1
-  fundViewOwner.invalidate()
+  beginNavigation('ranking', null, navigate)
   $('loading').hidden = true
   $('error-view').hidden = true
   $('company-view').hidden = true
   $('fund-view').hidden = true
   $('ranking-view').hidden = false
-  loadRanking()
-  window.scrollTo({ top: Math.max(0, $('ranking-view').offsetTop - 78), behavior: 'smooth' })
+  if (scroll) window.scrollTo({ top: Math.max(0, $('ranking-view').offsetTop - 78), behavior: 'instant' })
+  await loadRanking({ visible })
 }
 
 const shareNumber = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 })
@@ -298,15 +416,13 @@ const fundEventsLoader = createSingleFlightLoader(async () => {
 
 const loadFundEvents = () => fundEventsLoader.load()
 
-async function openFundView() {
+async function openFundView({ navigate = true, scroll = true, visible = 100 } = {}) {
   if (!state.ready) {
     toast('市场目录仍在载入，请稍候')
     return
   }
+  beginNavigation('funds', null, navigate)
   const viewToken = fundViewOwner.claim('fund-view')
-  state.companyRequest += 1
-  state.ranking.requestId += 1
-  state.ranking.loading = false
   $('loading').hidden = true
   $('error-view').hidden = true
   $('company-view').hidden = true
@@ -314,16 +430,18 @@ async function openFundView() {
   $('fund-view').hidden = false
   $('fund-list').innerHTML = '<div class="loading-card compact"><div class="spinner"></div><strong>基金报告加载中</strong></div>'
   $('fund-status').textContent = '正在载入基金动向…'
-  await settleOwned(fundViewOwner, viewToken, loadFundData(), {
+  if (scroll) window.scrollTo({ top: Math.max(0, $('fund-view').offsetTop - 78), behavior: 'instant' })
+  const task = Promise.all([loadFundData(), state.funds.mode.startsWith('events-') ? loadFundEvents() : Promise.resolve()])
+  await settleOwned(fundViewOwner, viewToken, task, {
     success: () => {
-      state.funds.visible = 100
+      state.funds.visible = visible
       renderFundView()
     },
     failure: error => {
       $('fund-status').textContent = '基金动向载入失败'
       $('fund-list').innerHTML = `<div class="error-card"><strong>暂时无法读取基金数据</strong><p>${escapeHtml(error.message)}</p></div>`
     },
-    settled: () => window.scrollTo({ top: Math.max(0, $('fund-view').offsetTop - 78), behavior: 'smooth' }),
+
   })
 }
 
@@ -356,7 +474,8 @@ async function renderCompanyFundPanel(code) {
   })
 }
 
-async function selectCompany(code) {
+async function selectCompany(code, { navigate = true, scroll = true } = {}) {
+  beginNavigation('company', code, navigate)
   const requestId = ++state.companyRequest
   const fundTabActive = document.querySelector('[data-tab="funds"]').classList.contains('active')
   fundViewOwner.invalidate()
@@ -368,7 +487,9 @@ async function selectCompany(code) {
   $('search-results').hidden = true
   $('stock-search').value = ''
   $('company-view').hidden = true
+  $('error-view').hidden = true
   $('loading').hidden = false
+  if (scroll) window.scrollTo({ top: Math.max(0, $('company-back').offsetTop - 90), behavior: 'instant' })
   try {
     const response = await fetch(shardUrl(basePath, code))
     if (!response.ok) throw new Error(`公司数据返回 ${response.status}`)
@@ -391,10 +512,9 @@ async function selectCompany(code) {
     $('panel-balance').innerHTML = balancePanel(data.financials)
     $('panel-cashflow').innerHTML = cashflowPanel(data.financials)
     $('panel-dividend').innerHTML = dividendPanel(data.dividends, stock.price)
-    history.replaceState({}, '', `${basePath}?code=${code}`)
     $('loading').hidden = true; $('company-view').hidden = false
     if (fundTabActive) renderCompanyFundPanel(code)
-    window.scrollTo({ top: Math.max(0, document.querySelector('.company-head').offsetTop - 90), behavior: 'smooth' })
+    saveNavigation()
     return true
   } catch (error) {
     if (state.companyRequest !== requestId) return false
@@ -414,11 +534,19 @@ async function init() {
     const requested = new URLSearchParams(location.search).get('code')
     const preferred = requested && state.stocks.some(x=>x.code===requested) ? requested : (state.stocks.find(x=>x.code==='600519')?.code || state.stocks[0]?.code)
     if (!preferred) throw new Error('市场目录为空')
-    if (!await selectCompany(preferred)) return
     state.ready = true
     $('stock-search').disabled = false
     $('ranking-open').disabled = false
     $('fund-open').disabled = false
+    if (history.state?.ashareNavigation) await restoreNavigation(history.state)
+    else if (new URLSearchParams(location.search).get('view') === 'ranking') {
+      const query = new URLSearchParams(location.search)
+      const kind = query.get('kind'), years = Number(query.get('years'))
+      if (['dividend', 'performance', 'peg'].includes(kind)) state.ranking.kind = kind
+      if ([1, 3, 5, 10].includes(years)) state.ranking.years = years
+      await openRanking({ navigate: false })
+    } else if (new URLSearchParams(location.search).get('view') === 'funds') await openFundView({ navigate: false })
+    else await selectCompany(preferred, { navigate: false })
   } catch (error) { $('loading').hidden = true; $('error-view').hidden = false; $('error-message').textContent = error.message }
 }
 
@@ -426,14 +554,10 @@ $('stock-search').addEventListener('input', event => renderSearch(event.target.v
 $('stock-search').addEventListener('focus', event => renderSearch(event.target.value))
 document.addEventListener('click', event => { if (!event.target.closest('.search-wrap')) $('search-results').hidden = true })
 $('tabs').addEventListener('click', event => { const button=event.target.closest('[data-tab]'); if(!button)return; document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('active',x===button)); document.querySelectorAll('.tab-panel').forEach(x=>x.classList.toggle('active',x.id===`panel-${button.dataset.tab}`)); if(button.dataset.tab==='funds'&&state.activeCode)renderCompanyFundPanel(state.activeCode) })
-$('ranking-open').addEventListener('click', openRanking)
-$('fund-open').addEventListener('click', openFundView)
-$('ranking-close').addEventListener('click', () => {
-  state.ranking.requestId += 1
-  state.ranking.loading = false
-  $('ranking-view').hidden = true
-  if (state.data) $('company-view').hidden = false
-})
+$('company-back').addEventListener('click', goBack)
+$('ranking-open').addEventListener('click', () => openRanking())
+$('fund-open').addEventListener('click', () => openFundView())
+$('ranking-close').addEventListener('click', goBack)
 $('ranking-types').addEventListener('click', event => { const button = event.target.closest('[data-ranking-kind]'); if (!button) return; state.ranking.kind = button.dataset.rankingKind; loadRanking() })
 $('ranking-years').addEventListener('click', event => { const button = event.target.closest('[data-ranking-years]'); if (!button) return; state.ranking.years = Number(button.dataset.rankingYears); loadRanking() })
 const rankingFilterIds = ['ranking-search', 'ranking-cap-min', 'ranking-cap-max', 'ranking-peg-min', 'ranking-peg-max']
@@ -445,11 +569,7 @@ $('ranking-filter-reset').addEventListener('click', () => {
 })
 $('ranking-list').addEventListener('click', event => { const button = event.target.closest('[data-ranking-code]'); if (button) selectCompany(button.dataset.rankingCode) })
 $('ranking-more').addEventListener('click', () => { state.ranking.visible += 100; renderRanking() })
-$('fund-close').addEventListener('click', () => {
-  fundViewOwner.invalidate()
-  $('fund-view').hidden = true
-  if (state.data) $('company-view').hidden = false
-})
+$('fund-close').addEventListener('click', goBack)
 $('fund-modes').addEventListener('click', async event => {
   const button = event.target.closest('[data-fund-mode]')
   if (!button) return
